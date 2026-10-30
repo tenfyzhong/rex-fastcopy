@@ -1,0 +1,4 @@
+Rex Fastcopy is adapted from the local rmux-fastcopy 0.1.0 project.
+The matching, hint selection, action execution, and terminal rendering code
+originate from rmux-fastcopy. Rex integration and snapshot handling are new.
+Distributed under GPL-2.0-only; see LICENSE.
