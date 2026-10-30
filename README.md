@@ -98,6 +98,8 @@ On Rex macOS 1497 at 2x display scaling, text in tiled panes starts 12 device pi
 
 ## Verification
 
+The GitHub Actions `Tests` workflow runs on pull requests and pushes to `main`, and also supports manual dispatch. Linux and macOS runners install Rust stable, Lua 5.5.1, LuaRocks, and Python, then run `make test-deps`, `make check`, and `make build`. This covers formatting, Clippy, Rust and Lua tests, PTY tests, and the release build. Live Rex integration tests remain opt-in locally because hosted runners do not provide a configured Rex server.
+
 `tests/core.rs` covers matching, shared labels, single and multiple selection, and action arguments. Rust rendering tests cover labels on short tokens and wide Chinese characters.
 `tests/test_core.lua` covers partially filled and empty screens, VT styles, erase-character sequences, blank-column decoding, pagination, independent overlays, failure cleanup, and focus-return arguments.
 `tests/test_guard.lua` covers isolation by client, startup protection, overlay closure, and automatic release after failures. Lua entry-point tests cover shortcut interception and restoration.
