@@ -213,3 +213,57 @@ fn word_regex_selects_arbitrary_words() {
 
     assert_eq!(found, vec!["hello", "world", "foo.bar", "42"]);
 }
+
+#[test]
+fn uppercase_alphabet_is_normalized_and_case_collisions_are_rejected() {
+    let hints = generate_hints("AB", "value", &[Match::new("word", 0..5)]).unwrap();
+    assert_eq!(hints[0].label, "a");
+    let mut state = AppState::new(hints);
+    assert!(!state.handle(AppEvent::Char('a')).unwrap().shifted);
+    assert!(generate_hints("aA", "", &[]).is_err());
+}
+
+fn two_character_state() -> AppState {
+    AppState::new(
+        generate_hints(
+            "ab",
+            "one two six",
+            &[
+                Match::new("word", 0..3),
+                Match::new("word", 4..7),
+                Match::new("word", 8..11),
+            ],
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+fn backspace_removes_only_the_deleted_characters_shift_state() {
+    let mut state = two_character_state();
+    state.handle(AppEvent::Char('A'));
+    state.handle(AppEvent::Backspace);
+    state.handle(AppEvent::Char('a'));
+    assert!(!state.handle(AppEvent::Char('a')).unwrap().shifted);
+
+    let mut state = two_character_state();
+    state.handle(AppEvent::Char('A'));
+    state.handle(AppEvent::Char('x'));
+    state.handle(AppEvent::Backspace);
+    assert!(state.handle(AppEvent::Char('a')).unwrap().shifted);
+}
+
+#[test]
+fn multi_selection_shift_comes_from_retained_selections() {
+    let mut state = two_character_state();
+    state.handle(AppEvent::Tab);
+    for ch in ['A', 'a'] {
+        state.handle(AppEvent::Char(ch));
+    }
+    state.handle(AppEvent::Backspace);
+    assert!(state.handle(AppEvent::Enter).unwrap().shifted);
+    for ch in ['a', 'a', 'a', 'b'] {
+        state.handle(AppEvent::Char(ch));
+    }
+    assert!(!state.handle(AppEvent::Enter).unwrap().shifted);
+}

@@ -129,6 +129,18 @@ function TestFastcopy:testVtEraseCellsDoesNotMoveCursor()
     file:close()
 end
 
+function TestFastcopy:testOverlayAddsHorizontalPaddingWithoutShrinkingSource()
+    local call = self.api.block.call
+    self.api.block.call = function(creator, method, args)
+        if method == "size" then return {columns = 119, rows = 3, cell_width_px = 16} end
+        return call(creator, method, args)
+    end
+    self.view.windows[1].layers[1].layout.split.after.rect = {0.5, 0, 0.5, 1}
+    fastcopy.open(self.api, {session_id = "s", block_id = "target"}, {directory = "/extension"})
+    lu.assertEquals(self.created.layout.block.options.size.columns, 240)
+    lu.assertEquals(self.created.bounds[3], 1)
+end
+
 function TestFastcopy:testLayerAccountsForNativeTopInset()
     local rect = fastcopy.overlay_bounds({rows = 58, cell_height_px = 35}, {0.5, 0, 0.5, 1})
     -- Native tiled panes inset their text by 12 device pixels at 2x scaling.

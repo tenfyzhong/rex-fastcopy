@@ -313,9 +313,10 @@ fn render(
 }
 
 fn viewport(region: [f64; 4], columns: u16, rows: u16, padding_columns: f64) -> Viewport {
-    let x = (region[0] * (f64::from(columns) + padding_columns)).round() as u16;
+    let content_columns = (f64::from(columns) - padding_columns).max(0.0);
+    let x = (region[0] * f64::from(columns)).round() as u16;
     let y = (region[1] * f64::from(rows)).round() as u16;
-    let width = ((region[2] * f64::from(columns)).round() as u16).min(columns.saturating_sub(x));
+    let width = ((region[2] * content_columns).round() as u16).min(columns.saturating_sub(x));
     let height = ((region[3] * f64::from(rows)).round() as u16).min(rows.saturating_sub(y));
     Viewport {
         x,
@@ -432,9 +433,10 @@ fn render_region(
         }
         let cell_width = cell.ch.width().unwrap_or(0) as u16;
         if cell_width > 0 && x.saturating_add(cell_width) > width {
-            x = 0;
-            y = y.saturating_add(1);
-            active = None;
+            // Snapshot lines are physical terminal rows. If the overlay has
+            // shrunk, clip the row instead of reflowing it over subsequent rows.
+            x = width;
+            continue;
         }
         if y >= height {
             break;
@@ -522,13 +524,45 @@ mod tests {
 
     #[test]
     fn pane_origins_include_window_padding_not_only_terminal_columns() {
-        let right = viewport([0.5, 0.0, 0.5, 1.0], 238, 58, 2.0);
+        let right = viewport([0.5, 0.0, 0.5, 1.0], 240, 58, 2.0);
         assert_eq!(
             right.x, 120,
             "right pane must retain its own native left inset"
         );
-        let left = viewport([0.0, 0.0, 0.5, 1.0], 238, 58, 2.0);
+        let left = viewport([0.0, 0.0, 0.5, 1.0], 240, 58, 2.0);
         assert_eq!(left.x, 0);
+    }
+
+    #[test]
+    fn padded_overlay_preserves_full_width_source_lines() {
+        let pane = viewport([0.5, 0.0, 0.5, 1.0], 240, 3, 2.0);
+        assert_eq!((pane.x, pane.width), (120, 119));
+        let text = format!("{}\n192.0.2.1", "x".repeat(119));
+        let mut output = Vec::new();
+        render_region(
+            &mut output,
+            &text,
+            &[],
+            &AppState::new(Vec::new()),
+            pane,
+            false,
+        )
+        .unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("\x1b[2;121H"));
+        assert!(output.contains("192.0.2.1"));
+    }
+
+    #[test]
+    fn narrower_overlay_clips_without_moving_following_rows() {
+        let text = "123456\nNEXT";
+        let mut output = Vec::new();
+        render_frame(&mut output, text, &[], &AppState::new(Vec::new()), 5, 3).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        let next = output.find("NEXT").unwrap();
+        let before = &output[..next];
+        assert!(before.rfind("\x1b[2;1H").unwrap() > before.rfind("\x1b[3;1H").unwrap());
+        assert!(!output.contains("123456"));
     }
 
     #[test]

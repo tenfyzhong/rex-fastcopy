@@ -21,7 +21,7 @@ Identical text shares a label and is copied only once. Labels are assigned in te
 The selector preserves **original pane coordinates**: right-hand content stays on the right, left-hand content stays on the left, and labels appear only in the target pane.
 Blank rows at the bottom of the screen are preserved. Content that occupies less than a full screen does not move down or pull in historical output.
 During selection, each pane displays a static snapshot captured when the selector opened. Processes keep running, and the original split layout and terminal dimensions remain unchanged. Completing or cancelling selection closes the overlay and restores the source pane's focus and live display.
-Snapshots use a uniform color scheme rather than the original program's colors or native pane borders. Horizontal positioning accounts for native padding, and the overlay's top offset compensates for the source pane's inset. Character positions remain subject to terminal-grid rounding.
+Snapshots use a uniform color scheme rather than the original program's colors or native pane borders. Horizontal positioning accounts for native padding, and the overlay's top offset compensates for the source pane's inset. The overlay reserves padding columns separately from pane content so full-width source rows do not reflow. If the overlay becomes narrower, excess columns are clipped rather than shifting subsequent rows. Character positions remain subject to terminal-grid rounding.
 
 ## Files and installation
 
@@ -78,7 +78,7 @@ args = {"--regex", "word:\\b[^\\s]+\\b"}
 ```
 
 Remove these arguments to label only the built-in structured matches, such as IP addresses and paths. The first capture group in a regex defines the copied range. An empty pattern disables a built-in matcher.
-Uppercase labels use `--shift-action`; if it is unset, they still copy to the clipboard.
+Alphabet characters are normalized to lowercase; duplicates after normalization (such as `aA`) are rejected. Uppercase label input uses `--shift-action`; if it is unset, it still copies to the clipboard. Backspace removes the deleted character's shift state. In multiple-selection mode, only retained selections contribute to the shift action.
 Action commands do not run through a shell. An argument containing `{}` is replaced with the selected text; otherwise, the text is written to the command's standard input.
 
 ### Native padding calibration
@@ -107,7 +107,7 @@ The GitHub Actions `Tests` workflow runs on pull requests and pushes to `main`, 
 
 `tests/demo.py` provides a reusable manual verification screen. Run it in a new Rex tab, then use the shortcut to select IP addresses, paths, and Chinese text. Press `q` to exit the demo.
 
-Navigation protection has been checked on the local client: Ctrl+h/l, Ctrl+S, Cmd+K, Cmd+1, and Ctrl+Tab do not navigate away while selecting in the right pane. Typing ac copies 192.0.2.10, and Ctrl+h/l work again after exit. Switching tabs with the mouse closes the overlay automatically; selection can be restarted and cancelled after returning. The regular test suite contains 44 passing tests.
+Navigation protection has been checked on the local client: Ctrl+h/l, Ctrl+S, Cmd+K, Cmd+1, and Ctrl+Tab do not navigate away while selecting in the right pane. Typing ac copies 192.0.2.10, and Ctrl+h/l work again after exit. Switching tabs with the mouse closes the overlay automatically; selection can be restarted and cancelled after returning. The regular test suite contains 50 passing tests.
 
 Optional live Rex tests create and clean up isolated sessions. They cover partially filled and empty screens, pagination, colors, links, and tab spacing, and verify that the source terminal remains unchanged. They also open a real selector overlay and complete selection by typing a label; the test action does not write to the clipboard:
 

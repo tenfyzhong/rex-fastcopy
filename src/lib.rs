@@ -172,7 +172,10 @@ pub fn generate_hints(alphabet: &str, text: &str, matches: &[Match]) -> Result<V
 }
 
 fn validate_alphabet(alphabet: &str) -> Result<Vec<char>> {
-    let alphabet = alphabet.chars().collect::<Vec<_>>();
+    let alphabet = alphabet
+        .chars()
+        .map(|ch| ch.to_lowercase().next().unwrap_or(ch))
+        .collect::<Vec<_>>();
     if alphabet.len() < 2 {
         bail!("alphabet must have at least two characters");
     }
@@ -223,7 +226,8 @@ pub struct AppState {
     input: String,
     selected: BTreeSet<usize>,
     multi_select: bool,
-    shifted: bool,
+    input_shifted: Vec<bool>,
+    shifted_selections: BTreeSet<usize>,
 }
 
 impl AppState {
@@ -233,7 +237,8 @@ impl AppState {
             input: String::new(),
             selected: BTreeSet::new(),
             multi_select: false,
-            shifted: false,
+            input_shifted: Vec::new(),
+            shifted_selections: BTreeSet::new(),
         }
     }
 
@@ -253,6 +258,7 @@ impl AppState {
         match event {
             AppEvent::Backspace => {
                 self.input.pop();
+                self.input_shifted.pop();
                 None
             }
             AppEvent::Tab if !self.multi_select => {
@@ -263,9 +269,7 @@ impl AppState {
             AppEvent::Tab => None,
             AppEvent::Enter => None,
             AppEvent::Char(ch) => {
-                if ch.is_uppercase() {
-                    self.shifted = true;
-                }
+                self.input_shifted.push(ch.is_uppercase());
                 let normalized = ch.to_lowercase().next().unwrap_or(ch);
                 self.input.push(normalized);
 
@@ -274,8 +278,12 @@ impl AppState {
 
                 if !self.selected.insert(index) {
                     self.selected.remove(&index);
+                    self.shifted_selections.remove(&index);
+                } else if self.input_shifted.iter().any(|shifted| *shifted) {
+                    self.shifted_selections.insert(index);
                 }
                 self.input.clear();
+                self.input_shifted.clear();
 
                 if self.multi_select {
                     None
@@ -309,7 +317,7 @@ impl AppState {
         Some(Selection {
             text,
             matcher_names,
-            shifted: self.shifted,
+            shifted: !self.shifted_selections.is_empty(),
         })
     }
 }

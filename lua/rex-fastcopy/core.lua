@@ -103,6 +103,10 @@ function M.open(api, ctx, options)
     assert(view, err)
     local window_id, bounds, window = locate(view, ctx.block_id)
     local content, dimensions = capture_screen(api, ctx.session_id, ctx.block_id)
+    local padding_columns = 0
+    if dimensions.cell_width_px and dimensions.cell_width_px > 0 then
+        padding_columns = 2 * (options.inset_x_px or 16) / dimensions.cell_width_px
+    end
     local paths = {}
     local function snapshot(text)
         local temp, temp_err = api.exec({"/usr/bin/mktemp", "-t", "rex-fastcopy"})
@@ -124,7 +128,7 @@ function M.open(api, ctx, options)
         }
         if dimensions.cell_width_px and dimensions.cell_width_px > 0 then
             command[#command + 1] = "--padding-columns"
-            command[#command + 1] = tostring(2 * (options.inset_x_px or 16) / dimensions.cell_width_px)
+            command[#command + 1] = tostring(padding_columns)
         end
         -- Rex 1497 clips offset layers. A window-sized surface retains all
         -- pane positions; neighboring panes are frozen snapshots, never moved.
@@ -154,7 +158,7 @@ function M.open(api, ctx, options)
                 flavor = "com.superlogical.terminal.shell", label = "Fastcopy",
                 options = {shell = "none", command = command,
                     size = {
-                        columns = math.floor(dimensions.columns / bounds[3] + 0.5),
+                        columns = math.floor(dimensions.columns / bounds[3] + padding_columns + 0.5),
                         rows = math.floor(dimensions.rows / bounds[4] + 0.5),
                     },
                     exit = {on_completion = true},
