@@ -28,7 +28,9 @@ Snapshots use a uniform color scheme rather than the original program's colors o
 Implementation, tests, and build artifacts stay in this directory. For a manual installation, add this line to the main `~/.config/rex/init.lua`:
 
 ```lua
-require("extensions.rex-fastcopy.init")
+local directory = os.getenv("HOME") .. "/.config/rex/extensions/rex-fastcopy"
+package.path = directory .. "/lua/?.lua;" .. directory .. "/lua/?/init.lua;" .. package.path
+require("rex-fastcopy")
 ```
 
 Place it after `require("keybindings")`. The entry point resolves modules and the executable relative to its own file, so the entire plugin directory can be relocated.
@@ -45,7 +47,7 @@ return {
 rexpack prefers a `rex-fastcopy` directory under `dev.path` and falls back to the installed directory when it is absent.
 The plugin loads at startup and registers its actions and key bindings without explicit `dev` or `lazy` settings. It does not provide a `setup()` function.
 The main configuration must call `require("keybindings")` before rexpack setup so the plugin can protect existing navigation bindings.
-The module entry point is `rex-fastcopy.lua`. Build a development plugin locally with `make build`.
+The module entry point is `lua/rex-fastcopy/init.lua`; `core.lua` and `guard.lua` live alongside it. rexpack adds the `lua/` search paths automatically. Build a development plugin locally with `make build`.
 
 Build and check:
 
@@ -57,7 +59,7 @@ make check
 ```
 
 There is no system Lua dependency at runtime: Rex uses its embedded Lua interpreter. macOS `pbcopy`, `mktemp`, and the local Rex Server CLI are required.
-The default CLI path is configured by `rex_path` in `init.lua`. After changing Lua, run `rex config check` and `rex config reload`. After changing Rust, run `make build`.
+The default CLI path is configured by `rex_path` in `lua/rex-fastcopy/init.lua`. After changing Lua, run `rex config check` and `rex config reload`. After changing Rust, run `make build`.
 If your shell cannot find `rex`, use:
 
 ```sh
@@ -68,7 +70,7 @@ To uninstall, remove the loading line from the main configuration and reload it,
 
 ## Configuration
 
-Edit `args` in this directory's `init.lua`. Supported options include `--alphabet`, `--regex NAME:PATTERN`, `--action`, and `--shift-action`.
+Edit `args` in `lua/rex-fastcopy/init.lua`. Supported options include `--alphabet`, `--regex NAME:PATTERN`, `--action`, and `--shift-action`.
 The default configuration adds the same ordinary-word matcher as the original rmux configuration:
 
 ```lua
@@ -82,7 +84,7 @@ Action commands do not run through a shell. An argument containing `{}` is repla
 ### Native padding calibration
 
 On Rex macOS 1497 at 2x display scaling, text in tiled panes starts 12 device pixels lower than in floating layers. Native horizontal padding is 16 pixels on each side. The extension compensates for both offsets to prevent a jump toward the top-left when opening. It does not insert a whole blank row as top padding.
-`core.open` accepts `inset_x_px` and `inset_y_px`, defaulting to 16 and 12. Override them in the options in `init.lua`. Rex exposes integral row and column counts and character-cell pixel dimensions, but not the complete client-area pixel rectangle. Window height is estimated with a half-row allowance. Equal left/right splits have been checked on the local client; other display scales, arbitrary split ratios, and top/bottom splits have not received pixel-level alignment verification.
+`core.open` accepts `inset_x_px` and `inset_y_px`, defaulting to 16 and 12. Override them in the options in `lua/rex-fastcopy/init.lua`. Rex exposes integral row and column counts and character-cell pixel dimensions, but not the complete client-area pixel rectangle. Window height is estimated with a half-row allowance. Equal left/right splits have been checked on the local client; other display scales, arbitrary split ratios, and top/bottom splits have not received pixel-level alignment verification.
 
 ## Current limitations
 

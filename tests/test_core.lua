@@ -1,6 +1,6 @@
-package.path = "./?.lua;./.test-deps/share/lua/5.5/?.lua;" .. package.path
+package.path = "./lua/?.lua;./lua/?/init.lua;./.test-deps/share/lua/5.5/?.lua;" .. package.path
 local lu = require("luaunit")
-local fastcopy = require("core")
+local fastcopy = require("rex-fastcopy.core")
 
 TestFastcopy = {}
 function TestFastcopy:testScreenTailPreservesBlankRows()
@@ -184,19 +184,14 @@ end
 
 function TestFastcopy:testEntryGuardsNavigationAndReleasesAfterClose()
     local saved_rex = _G.rex
-    local saved_loadfile = _G.loadfile
+    local saved_core = package.loaded["rex-fastcopy.core"]
     local actions, queued, bound, layers = {}, {}, {}, {{layer_id = "test"}}
     local opens, directory = 0, nil
-    _G.loadfile = function(path)
-        if path:match("/core%.lua$") then
-            return function() return {open = function(_, _, options)
-                opens = opens + 1
-                directory = options.directory
-                return {layer_id = "test"}
-            end} end
-        end
-        return saved_loadfile(path)
-    end
+    package.loaded["rex-fastcopy.core"] = {open = function(_, _, options)
+        opens = opens + 1
+        directory = options.directory
+        return {layer_id = "test"}
+    end}
     _G.rex = {
         action = function(value) actions[value.name] = value end,
         bindings = function() return {
@@ -207,7 +202,7 @@ function TestFastcopy:testEntryGuardsNavigationAndReleasesAfterClose()
         session = {view = function() return {windows = {{layers = layers}}} end},
         client = {queue = function(name) queued[#queued + 1] = name end},
     }
-    dofile(os.getenv("PWD") .. "/init.lua")
+    dofile(os.getenv("PWD") .. "/lua/rex-fastcopy/init.lua")
     local ctx = {session_id = "s", block_id = "target", client_id = "client"}
     local result = actions.fastcopy.run(ctx)
     lu.assertEquals(result.layer_id, "test")
@@ -225,7 +220,7 @@ function TestFastcopy:testEntryGuardsNavigationAndReleasesAfterClose()
     actions.fastcopy_guard.run(ctx, bound["ctrl+h"].args)
     lu.assertEquals(queued, {"client.mode.exit_all", "pane.focus"})
     _G.rex = saved_rex
-    _G.loadfile = saved_loadfile
+    package.loaded["rex-fastcopy.core"] = saved_core
 end
 
 function TestFastcopy:testRexpackModuleRegistersBindingsWithoutLegacyPaths()

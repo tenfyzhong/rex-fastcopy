@@ -70,7 +70,7 @@ captured.layer = layer
 return captured
 '''
             actual = self.rex("do", "-s", session, "-e", script, "--args", json.dumps({
-                "core": str(ROOT / "core.lua"), "directory": str(ROOT),
+                "core": str(ROOT / "lua/rex-fastcopy/core.lua"), "directory": str(ROOT),
                 "session": session, "block": block, "paginated": paginated, "overlay": overlay,
             }), "--json")
             rows = expected.split("\n")

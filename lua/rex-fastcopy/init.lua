@@ -1,7 +1,8 @@
 local source = debug.getinfo(1, "S").source:gsub("^@", "")
-local directory = source:match("^(.*)/") or "."
-local core = assert(loadfile(directory .. "/core.lua"))()
-local guard = assert(loadfile(directory .. "/guard.lua"))().new(rex)
+local directory = assert(source:match("^(.*)/lua/rex%-fastcopy/init%.lua$"),
+    "fastcopy: cannot locate plugin root")
+local core = require("rex-fastcopy.core")
+local guard = require("rex-fastcopy.guard").new(rex)
 
 rex.action{
     name = "fastcopy",

@@ -1,6 +1,6 @@
-package.path = "./?.lua;./.test-deps/share/lua/5.5/?.lua;" .. package.path
+package.path = "./lua/?.lua;./lua/?/init.lua;./.test-deps/share/lua/5.5/?.lua;" .. package.path
 local lu = require("luaunit")
-local Guard = require("guard")
+local Guard = require("rex-fastcopy.guard")
 
 TestGuard = {}
 function TestGuard:setUp()
