@@ -15,7 +15,7 @@ rex.action{
             directory = directory,
             rex_path = os.getenv("HOME") .. "/Library/Application Support/com.superlogical.rex/"
                 .. "RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex",
-            args = {"--regex", "word:\\b[^\\s]+\\b"},
+            args = {"--regex", "word:(?:\\.|\\b)\\S+\\b"},
         })
         if not ok then guard:clear(ctx); error(result) end
         guard:opened(ctx, result)
