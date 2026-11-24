@@ -22,14 +22,29 @@ rex.action{
         -- Rex consumes Escape to exit an active key mode before the terminal
         -- receives it. Clear passthrough mode so one Escape cancels the picker.
         rex.client.queue("client.mode.exit_all")
-        if result.window_id then
-            rex.client.queue("session.select", {session_id = ctx.session_id, window_id = result.window_id})
-        end
         return result
     end,
 }
 rex.bind("prefix/f", "fastcopy")
 rex.bind("terminal_prefix/f", "fastcopy")
+
+local function cancel_picker(ctx)
+    if not guard:is_picker(ctx) then return false end
+    -- Send the picker's existing Ctrl+C cancel input directly. A bare Escape
+    -- can be consumed by key modes or combined with another terminal sequence.
+    return rex.block.call("com.superlogical.terminal", "write", {
+        session_id = ctx.session_id, block_id = ctx.block_id, data = "\3",
+    }) ~= nil
+end
+
+rex.action{
+    name = "fastcopy_passthrough_escape",
+    title = "Fastcopy: Escape in Terminal Mode",
+    args = {key = "string"},
+    run = function(ctx, args)
+        if not cancel_picker(ctx) then rex.client.queue("pane.send_key", args) end
+    end,
+}
 
 -- Guard actions rather than entering a persistent mode. A finished/crashed
 -- helper cannot leave normal typing trapped in a stale exclusive key table.
@@ -51,7 +66,10 @@ for _, binding in ipairs(rex.bindings()) do
     local action = binding.action or ""
     local key = (binding.mode and binding.mode .. "/" or "") .. binding.key
     configured[key] = true
-    if (action:match("^pane%.") and action ~= "pane.send_key")
+    if binding.mode == "terminal" and (binding.key == "esc" or binding.key == "escape")
+        and action == "pane.send_key" then
+        rex.bind(key, "fastcopy_passthrough_escape", binding.args)
+    elseif (action:match("^pane%.") and action ~= "pane.send_key")
         or action:match("^session%.") or action:match("^client%.tab%.")
         or action:match("^client%.window%.") or action:match("^client%.sidebar%.")
         or action == "client.mode.enter" or action == "client.config.reload"
@@ -59,6 +77,7 @@ for _, binding in ipairs(rex.bindings()) do
         protect(key, action, binding.args)
     end
 end
+rex.bind("escape", cancel_picker)
 -- Native macOS routes which do not appear in rex.bindings(). Configured
 -- bindings above retain their original action/arguments.
 local native = {

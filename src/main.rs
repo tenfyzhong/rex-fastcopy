@@ -17,7 +17,7 @@ use rex_fastcopy::{AppEvent, AppState, Hint, MatcherSet, Selection, generate_hin
 use std::collections::HashMap;
 use std::io::{self, Stdout, Write};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthChar;
 
 #[derive(Debug, Parser)]
@@ -26,6 +26,12 @@ struct Args {
     /// Private screen snapshot, removed immediately after reading.
     #[arg(long)]
     snapshot: PathBuf,
+    /// Wait briefly for the snapshot to be published after Rex places the picker.
+    #[arg(long)]
+    wait_for_snapshot: bool,
+    /// Keep the last frame visible when Rex will close this terminal.
+    #[arg(long)]
+    keep_frame_on_exit: bool,
     /// Display a neighboring pane's snapshot without labels or input.
     #[arg(long)]
     preview: bool,
@@ -117,7 +123,17 @@ fn main() {
 }
 
 fn run(args: &Args) -> Result<bool> {
-    let captured = std::fs::read_to_string(&args.snapshot);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let captured = loop {
+        let captured = std::fs::read_to_string(&args.snapshot);
+        if !args.wait_for_snapshot
+            || !matches!(&captured, Err(error) if error.kind() == io::ErrorKind::NotFound)
+            || Instant::now() >= deadline
+        {
+            break captured;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
     let removed = std::fs::remove_file(&args.snapshot);
     let backgrounds = args
         .background
@@ -144,13 +160,7 @@ fn run(args: &Args) -> Result<bool> {
     }
     let matchers = MatcherSet::with_overrides(args.regexes.clone())?;
     let hints = generate_hints(&args.alphabet, &text, &matchers.find(&text))?;
-    let (selection, restore_focus) = run_ui(
-        &text,
-        &hints,
-        args.region,
-        &backgrounds,
-        args.padding_columns,
-    )?;
+    let (selection, restore_focus) = run_ui(&text, &hints, args, &backgrounds)?;
     if let Some(selection) = selection {
         let action = if selection.shifted {
             args.shift_action.as_deref().unwrap_or(&args.action)
@@ -164,30 +174,38 @@ fn run(args: &Args) -> Result<bool> {
 
 struct Terminal {
     stdout: Stdout,
+    keep_frame_on_exit: bool,
 }
 
 impl Terminal {
-    fn enter() -> Result<Self> {
+    fn enter(keep_frame_on_exit: bool) -> Result<Self> {
         enable_raw_mode().context("enable raw terminal mode")?;
         let mut stdout = io::stdout();
         if let Err(error) = execute!(stdout, EnterAlternateScreen, Hide, EnableFocusChange) {
             let _ = disable_raw_mode();
             return Err(error).context("enter alternate screen");
         }
-        Ok(Self { stdout })
+        Ok(Self {
+            stdout,
+            keep_frame_on_exit,
+        })
     }
 }
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        let _ = execute!(self.stdout, DisableFocusChange, Show, LeaveAlternateScreen);
+        if self.keep_frame_on_exit {
+            let _ = execute!(self.stdout, DisableFocusChange);
+        } else {
+            let _ = execute!(self.stdout, DisableFocusChange, Show, LeaveAlternateScreen);
+        }
         let _ = disable_raw_mode();
     }
 }
 
 fn run_preview(text: &str) -> Result<()> {
     crossterm::style::force_color_output(true);
-    let mut terminal = Terminal::enter()?;
+    let mut terminal = Terminal::enter(false)?;
     let state = AppState::new(Vec::new());
     loop {
         let (columns, rows) = size().context("read terminal size")?;
@@ -209,22 +227,17 @@ fn run_preview(text: &str) -> Result<()> {
 fn run_ui(
     text: &str,
     hints: &[Hint],
-    region: [f64; 4],
+    args: &Args,
     backgrounds: &[Background],
-    padding_columns: f64,
 ) -> Result<(Option<Selection>, bool)> {
     crossterm::style::force_color_output(true);
-    let mut terminal = Terminal::enter()?;
+    let mut terminal = Terminal::enter(args.keep_frame_on_exit)?;
     let mut state = AppState::new(hints.to_vec());
-    render(
-        &mut terminal.stdout,
-        text,
-        hints,
-        &state,
-        region,
-        backgrounds,
-        padding_columns,
-    )?;
+    let mut first_row = 0_usize;
+    let redraw = |stdout: &mut Stdout, state: &AppState, first_row: &mut usize| {
+        render(stdout, text, hints, state, args, backgrounds, first_row)
+    };
+    redraw(&mut terminal.stdout, &state, &mut first_row)?;
 
     loop {
         if !event::poll(Duration::from_secs(30)).context("poll terminal input")? {
@@ -233,20 +246,21 @@ fn run_ui(
         let event = event::read().context("read terminal input")?;
         match event {
             Event::FocusLost => return Ok((None, false)),
-            Event::Resize(_, _) => render(
-                &mut terminal.stdout,
-                text,
-                hints,
-                &state,
-                region,
-                backgrounds,
-                padding_columns,
-            )?,
+            Event::Resize(_, _) => redraw(&mut terminal.stdout, &state, &mut first_row)?,
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 let app_event = match key.code {
                     KeyCode::Esc => return Ok((None, true)),
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         return Ok((None, true));
+                    }
+                    KeyCode::Up | KeyCode::Down => {
+                        first_row = if key.code == KeyCode::Up {
+                            first_row.saturating_sub(1)
+                        } else {
+                            first_row + 1
+                        };
+                        redraw(&mut terminal.stdout, &state, &mut first_row)?;
+                        continue;
                     }
                     KeyCode::Backspace => Some(AppEvent::Backspace),
                     KeyCode::Tab | KeyCode::BackTab => Some(AppEvent::Tab),
@@ -263,15 +277,7 @@ fn run_ui(
                     if let Some(selection) = state.handle(app_event) {
                         return Ok((Some(selection), true));
                     }
-                    render(
-                        &mut terminal.stdout,
-                        text,
-                        hints,
-                        &state,
-                        region,
-                        backgrounds,
-                        padding_columns,
-                    )?;
+                    redraw(&mut terminal.stdout, &state, &mut first_row)?;
                 }
             }
             _ => {}
@@ -302,6 +308,7 @@ struct Viewport {
     y: u16,
     width: u16,
     height: u16,
+    first_row: usize,
 }
 
 fn render(
@@ -309,9 +316,9 @@ fn render(
     text: &str,
     hints: &[Hint],
     state: &AppState,
-    region: [f64; 4],
+    args: &Args,
     backgrounds: &[Background],
-    padding_columns: f64,
+    first_row: &mut usize,
 ) -> Result<()> {
     let (columns, rows) = size().context("read terminal size")?;
     queue!(
@@ -326,18 +333,18 @@ fn render(
             &background.content,
             &[],
             &empty,
-            viewport(background.region, columns, rows, padding_columns),
+            viewport(background.region, columns, rows, args.padding_columns),
             false,
         )?;
     }
-    render_region(
-        stdout,
-        text,
-        hints,
-        state,
-        viewport(region, columns, rows, padding_columns),
-        true,
-    )
+    let mut target = viewport(args.region, columns, rows, args.padding_columns);
+    let last_page_start = text
+        .split('\n')
+        .count()
+        .saturating_sub(usize::from(target.height));
+    *first_row = (*first_row).min(last_page_start);
+    target.first_row = *first_row;
+    render_region(stdout, text, hints, state, target, true)
 }
 
 fn viewport(region: [f64; 4], columns: u16, rows: u16, padding_columns: f64) -> Viewport {
@@ -351,6 +358,7 @@ fn viewport(region: [f64; 4], columns: u16, rows: u16, padding_columns: f64) -> 
         y,
         width,
         height,
+        first_row: 0,
     }
 }
 
@@ -373,6 +381,7 @@ fn render_frame(
             y: 0,
             width,
             height,
+            first_row: 0,
         },
         true,
     )
@@ -391,11 +400,19 @@ fn render_region(
         y: origin_y,
         width,
         height,
+        first_row,
     } = viewport;
-    let mut cells = text
+    let start = if first_row == 0 {
+        0
+    } else {
+        text.match_indices('\n')
+            .nth(first_row - 1)
+            .map_or(text.len(), |(offset, _)| offset + 1)
+    };
+    let mut cells = text[start..]
         .char_indices()
         .map(|(byte_offset, ch)| Cell {
-            byte_offset,
+            byte_offset: start + byte_offset,
             ch,
             style: CellStyle::Normal,
         })
@@ -631,6 +648,7 @@ mod tests {
                 y: 0,
                 width: 40,
                 height: 12,
+                first_row: 0,
             },
             true,
         )
