@@ -71,10 +71,10 @@ To uninstall, remove the loading line from the main configuration and reload it,
 ## Configuration
 
 Edit `args` in `lua/rex-fastcopy/init.lua`. Supported options include `--alphabet`, `--regex NAME:PATTERN`, `--action`, and `--shift-action`.
-The default configuration adds the same ordinary-word matcher as the original rmux configuration:
+The default configuration adds an ordinary-word matcher that keeps leading dots attached when copying names like `.alias.bash` and paths like `./file`.
 
 ```lua
-args = {"--regex", "word:\\b[^\\s]+\\b"}
+args = {"--regex", "word:(?:\\.|\\b)\\S+\\b"}
 ```
 
 Remove these arguments to label only the built-in structured matches, such as IP addresses and paths. The first capture group in a regex defines the copied range. An empty pattern disables a built-in matcher.

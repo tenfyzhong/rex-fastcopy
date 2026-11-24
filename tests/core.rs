@@ -203,15 +203,35 @@ fn show_options_parses_single_quoted_values() {
 
 #[test]
 fn word_regex_selects_arbitrary_words() {
-    let text = "hello world foo.bar, 42";
-    let matchers = MatcherSet::from_patterns([("word", r"\b[^\s]+\b")]).unwrap();
+    let text = concat!(
+        "hello world foo.bar, 42 .\n",
+        "modified:   .alias.bash\n",
+        "modified:   .config/fish/config.fish\n",
+        ".gitignore ./file ../file",
+    );
+    let matchers = MatcherSet::with_overrides([("word", r"(?:\.|\b)\S+\b")]).unwrap();
     let found: Vec<_> = matchers
         .find(text)
         .into_iter()
         .map(|matched| &text[matched.selection])
         .collect();
 
-    assert_eq!(found, vec!["hello", "world", "foo.bar", "42"]);
+    assert_eq!(
+        found,
+        vec![
+            "hello",
+            "world",
+            "foo.bar",
+            "42",
+            "modified",
+            ".alias.bash",
+            "modified",
+            ".config/fish/config.fish",
+            ".gitignore",
+            "./file",
+            "../file",
+        ]
+    );
 }
 
 #[test]
