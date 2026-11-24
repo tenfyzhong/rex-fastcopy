@@ -26,6 +26,9 @@ struct Args {
     /// Private screen snapshot, removed immediately after reading.
     #[arg(long)]
     snapshot: PathBuf,
+    /// Display a neighboring pane's snapshot without labels or input.
+    #[arg(long)]
+    preview: bool,
     /// Target pane rectangle as window fractions x,y,width,height.
     #[arg(long, default_value = "0,0,1,1", value_parser = parse_region)]
     region: [f64; 4],
@@ -135,6 +138,10 @@ fn run(args: &Args) -> Result<bool> {
         .collect::<std::io::Result<Vec<_>>>()?;
     let text = captured.context("read snapshot")?;
     removed.context("remove snapshot")?;
+    if args.preview {
+        run_preview(&text)?;
+        return Ok(false);
+    }
     let matchers = MatcherSet::with_overrides(args.regexes.clone())?;
     let hints = generate_hints(&args.alphabet, &text, &matchers.find(&text))?;
     let (selection, restore_focus) = run_ui(
@@ -175,6 +182,27 @@ impl Drop for Terminal {
     fn drop(&mut self) {
         let _ = execute!(self.stdout, DisableFocusChange, Show, LeaveAlternateScreen);
         let _ = disable_raw_mode();
+    }
+}
+
+fn run_preview(text: &str) -> Result<()> {
+    crossterm::style::force_color_output(true);
+    let mut terminal = Terminal::enter()?;
+    let state = AppState::new(Vec::new());
+    loop {
+        let (columns, rows) = size().context("read terminal size")?;
+        render_region(
+            &mut terminal.stdout,
+            text,
+            &[],
+            &state,
+            viewport([0.0, 0.0, 1.0, 1.0], columns, rows, 0.0),
+            false,
+        )?;
+        while !matches!(
+            event::read().context("read preview terminal input")?,
+            Event::Resize(..)
+        ) {}
     }
 }
 

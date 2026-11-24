@@ -12,7 +12,7 @@ Press **Ctrl+S**, release it, then press **f**.
 - **Backspace** removes the last character from the label input.
 - **Esc** or **Ctrl+C** cancels without changing the clipboard.
 - While selecting, configured pane, session, tab, and window navigation shortcuts are intercepted, including Ctrl+h/j/k/l, prefix keys, Cmd+K, Cmd+number, and Ctrl+Tab. They are restored after selection or cancellation.
-- The current Lua API cannot prevent mouse clicks on tab or session buttons. If the selection terminal loses focus, the overlay cancels and closes without stealing focus back. Start selection again after returning.
+- The current Lua API cannot prevent mouse clicks on tab or session buttons. If the selection terminal loses focus, the picker cancels and closes without stealing focus back. Start selection again after returning.
 - Both the normal prefix mode and the prefix inside `terminal` passthrough mode are supported. Opening the selector exits passthrough mode so a single Esc cancels. Use Ctrl+S, t to re-enter passthrough mode when needed.
 
 The default matchers recognize IP addresses, paths, Git hashes, UUIDs, dates, hexadecimal values, numbers, and ordinary words.
@@ -20,8 +20,8 @@ Identical text shares a label and is copied only once. Labels are assigned in te
 
 The selector preserves **original pane coordinates**: right-hand content stays on the right, left-hand content stays on the left, and labels appear only in the target pane.
 Blank rows at the bottom of the screen are preserved. Content that occupies less than a full screen does not move down or pull in historical output.
-During selection, each pane displays a static snapshot captured when the selector opened. Processes keep running, and the original split layout and terminal dimensions remain unchanged. Completing or cancelling selection closes the overlay and restores the source pane's focus and live display.
-Snapshots use a uniform color scheme rather than the original program's colors or native pane borders. Horizontal positioning accounts for native padding, and the overlay's top offset compensates for the source pane's inset. The overlay reserves padding columns separately from pane content so full-width source rows do not reflow. If the overlay becomes narrower, excess columns are clipped rather than shifting subsequent rows. Character positions remain subject to terminal-grid rounding.
+For a tiled layout, Fastcopy displays static snapshots in a temporary tab with the same native splits. Rex gives both tabs the same pane padding and terminal grid. The original terminals keep running at their existing dimensions. Selecting a value or cancelling closes the picker tab and returns to the source pane.
+Snapshots use a uniform color scheme. If a picker pane becomes narrower during selection, it clips excess columns so subsequent rows retain their positions.
 
 ## Files and installation
 
@@ -81,14 +81,10 @@ Remove these arguments to label only the built-in structured matches, such as IP
 Alphabet characters are normalized to lowercase; duplicates after normalization (such as `aA`) are rejected. Uppercase label input uses `--shift-action`; if it is unset, it still copies to the clipboard. Backspace removes the deleted character's shift state. In multiple-selection mode, only retained selections contribute to the shift action.
 Action commands do not run through a shell. An argument containing `{}` is replaced with the selected text; otherwise, the text is written to the command's standard input.
 
-### Native padding calibration
-
-On Rex macOS 1497 at 2x display scaling, text in tiled panes starts 12 device pixels lower than in floating layers. Native horizontal padding is 16 pixels on each side. The extension compensates for both offsets to prevent a jump toward the top-left when opening. It does not insert a whole blank row as top padding.
-`core.open` accepts `inset_x_px` and `inset_y_px`, defaulting to 16 and 12. Override them in the options in `lua/rex-fastcopy/init.lua`. Rex exposes integral row and column counts and character-cell pixel dimensions, but not the complete client-area pixel rectangle. Window height is estimated with a half-row allowance. Equal left/right splits have been checked on the local client; other display scales, arbitrary split ratios, and top/bottom splits have not received pixel-level alignment verification.
-
 ## Current limitations
 
-- Verified with Rex Beta **0.1.0 (1497)**. Offset floating layers showed clipping and background-display problems in this version, so the extension uses a window-sized drawing surface and redraws each pane at its original coordinates. It does not enlarge the target pane or move its content to the top-left.
+- Verified with Rex **0.1.0 (2061)** on macOS. Rex may open the temporary picker tab in its main window when the source tab is detached.
+- Layouts with visible floating panes use a window-sized floating overlay. Rex applies floating-window insets to its grid. Use `inset_x_px` and `inset_y_px` in the options passed to `core.open` to tune that overlay.
 - Snapshots capture the terminal's **bottom screen**, not the historical viewport shown after scrolling up in the client. Return to the bottom before opening the selector.
 - Every pane in the window must currently be a readable terminal. If any snapshot fails, the selector does not open.
 - Long history is read in pages through `blob_read`, retaining only text near the final screen. Each pane is limited to 128 MiB and 256 continuation pages. Failures do not display partial snapshots.
@@ -101,15 +97,15 @@ On Rex macOS 1497 at 2x display scaling, text in tiled panes starts 12 device pi
 The GitHub Actions `Tests` workflow runs on pull requests and pushes to `main`, and also supports manual dispatch. Linux and macOS runners install Rust stable, Lua 5.5.1, LuaRocks, and Python, then run `make test-deps`, `make check`, and `make build`. This covers formatting, Clippy, Rust and Lua tests, PTY tests, and the release build. Live Rex integration tests remain opt-in locally because hosted runners do not provide a configured Rex server.
 
 `tests/core.rs` covers matching, shared labels, single and multiple selection, and action arguments. Rust rendering tests cover labels on short tokens and wide Chinese characters.
-`tests/test_core.lua` covers partially filled and empty screens, VT styles, erase-character sequences, blank-column decoding, pagination, independent overlays, failure cleanup, and focus-return arguments.
+`tests/test_core.lua` covers partially filled and empty screens, VT styles, erase-character sequences, blank-column decoding, pagination, cloned tiled layouts, independent overlays, failure cleanup, and focus-return arguments.
 `tests/test_guard.lua` covers isolation by client, startup protection, overlay closure, and automatic release after failures. Lua entry-point tests cover shortcut interception and restoration.
 `tests/test_terminal.py` drives the executable through a real PTY. It covers single and multiple selection, cancellation, empty screens, private snapshot deletion, right-pane positioning, neighboring-pane visibility, focus restoration, and cancellation on focus loss without stealing focus back.
 
 `tests/demo.py` provides a reusable manual verification screen. Run it in a new Rex tab, then use the shortcut to select IP addresses, paths, and Chinese text. Press `q` to exit the demo.
 
-Navigation protection has been checked on the local client: Ctrl+h/l, Ctrl+S, Cmd+K, Cmd+1, and Ctrl+Tab do not navigate away while selecting in the right pane. Typing ac copies 192.0.2.10, and Ctrl+h/l work again after exit. Switching tabs with the mouse closes the overlay automatically; selection can be restarted and cancelled after returning. The regular test suite contains 50 passing tests.
+The tiled picker has been checked in Rex with a left pane and two vertically stacked right panes. Labels appeared in the bottom-right pane and cancellation restored the original tab.
 
-Optional live Rex tests create and clean up isolated sessions. They cover partially filled and empty screens, pagination, colors, links, and tab spacing, and verify that the source terminal remains unchanged. They also open a real selector overlay and complete selection by typing a label; the test action does not write to the clipboard:
+Optional live Rex tests create and clean up isolated sessions. They cover partially filled and empty screens, pagination, colors, links, and tab spacing. They also verify that the picker tab inherits the source grid and closes after label selection. The test action uses `/usr/bin/true` to leave the clipboard intact.
 
 ```sh
 REX_FASTCOPY_TEST_REX="$HOME/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex" make test-rex

@@ -141,6 +141,45 @@ function TestFastcopy:testOverlayAddsHorizontalPaddingWithoutShrinkingSource()
     lu.assertEquals(self.created.bounds[3], 1)
 end
 
+function TestFastcopy:testTiledPickerClonesNativeSplitAndKeepsSourceGrid()
+    local layer = self.view.windows[1].layers[1]
+    layer.kind = "tiled"
+    layer.bounds = {0, 0, 1, 1}
+    local calls = {}
+    self.api.session.new_window = function(args)
+        calls.window = args
+        return {window_id = "picker", block_ids = {"preview-left", "picker-target"}}
+    end
+    self.api.session.focus_block = function(args)
+        calls.focus = args
+        return {}
+    end
+    local exec = self.api.exec
+    self.api.exec = setmetatable({start = function(argv)
+        calls.watcher = argv
+        return {}
+    end}, {__call = function(_, argv)
+        return exec(argv)
+    end})
+    self.api.session.new_layer = function()
+        error("tiled snapshots must use native tiled geometry")
+    end
+    local result = fastcopy.open(self.api, {session_id = "s", block_id = "target"},
+        {directory = "/extension", rex_path = "/bin/rex"})
+
+    lu.assertEquals(result.window_id, "picker")
+    lu.assertFalse(calls.window.focus)
+    local split = calls.window.layout.split
+    lu.assertEquals(split.direction, "horizontal")
+    lu.assertEquals(split.ratio, 0.5)
+    lu.assertEquals(split.before.block.options.size, {columns = 40, rows = 3})
+    lu.assertEquals(split.after.block.options.size, {columns = 40, rows = 3})
+    lu.assertStrContains(table.concat(split.before.block.options.command, " "), "--preview")
+    lu.assertNotStrContains(table.concat(split.after.block.options.command, " "), "--region")
+    lu.assertEquals(calls.focus, {session_id = "s", block_id = "picker-target"})
+    lu.assertEquals({table.unpack(calls.watcher, #calls.watcher - 3)}, {"/bin/rex", "s", "picker-target", "picker"})
+end
+
 function TestFastcopy:testLayerAccountsForNativeTopInset()
     local rect = fastcopy.overlay_bounds({rows = 58, cell_height_px = 35}, {0.5, 0, 0.5, 1})
     -- Native tiled panes inset their text by 12 device pixels at 2x scaling.
