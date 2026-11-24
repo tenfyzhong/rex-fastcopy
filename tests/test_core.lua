@@ -300,7 +300,7 @@ function TestFastcopy:testEntryGuardsNavigationAndReleasesAfterClose()
     lu.assertEquals(writes, {})
     lu.assertTrue(escape(picker))
     local passthrough = bound["terminal/esc"]
-    lu.assertEquals(passthrough.args, {key = "escape"})
+    lu.assertEquals(passthrough.args, {action = "pane.send_key", original_args = {key = "escape"}})
     actions[passthrough.action].run(picker, passthrough.args)
     local cancel = {session_id = "s", block_id = "picker", data = "\3"}
     lu.assertEquals(writes, {cancel, cancel})
@@ -331,6 +331,60 @@ function TestFastcopy:testRexpackModuleRegistersBindingsWithoutLegacyPaths()
     lu.assertNotNil(actions.fastcopy)
     lu.assertEquals(bindings["prefix/f"], "fastcopy")
     lu.assertEquals(bindings["terminal_prefix/f"], "fastcopy")
+end
+
+function TestFastcopy:testConfiguredEscapeRunsOriginalActionOutsidePicker()
+    local saved_rex = _G.rex
+    local saved_core = package.loaded["rex-fastcopy.core"]
+    for _, original in ipairs({
+        {action = "pane.focus", args = {direction = "left"}, route = "client"},
+        {action = "custom_escape", args = {target = "editor"}, route = "server"},
+    }) do
+        local actions, bindings, forwarded, writes = {}, {}, {}, {}
+        local write_error
+        local function forward(route, action, args)
+            if action ~= "client.mode.exit_all" then
+                forwarded[#forwarded + 1] = {route, action, args}
+            end
+        end
+        package.loaded["rex-fastcopy.core"] = {open = function() return {block_ids = {"picker"}} end}
+        _G.rex = {
+            action = function(action) actions[action.name] = action end,
+            bind = function(key, action, args) bindings[key] = {action = action, args = args} end,
+            bindings = function() return {
+                {key = "escape", action = "pane.send_key", args = {key = "escape"}},
+                {key = "esc", action = original.action, args = original.args},
+            } end,
+            session = {list_blocks = function() return {blocks = {}} end},
+            block = {call = function(_, _, args)
+                if write_error then return nil, write_error end
+                writes[#writes + 1] = args
+                return {bytes_written = 1}
+            end},
+            client = {queue = function(name, args) forward("client", name, args) end},
+            invoke = function(name, args) forward("server", name, args) end,
+        }
+        dofile(os.getenv("PWD") .. "/lua/rex-fastcopy/init.lua")
+        local binding = bindings.escape
+        lu.assertIsString(binding.action)
+        local run_escape = actions[binding.action].run
+        local source = {session_id = "s", block_id = "source", client_id = "client"}
+        local picker = {session_id = "s", block_id = "picker", client_id = "client"}
+        run_escape(source, binding.args)
+        actions.fastcopy.run(source)
+        run_escape(picker, binding.args)
+        run_escape(source, binding.args)
+        lu.assertEquals(forwarded, {
+            {original.route, original.action, original.args},
+            {original.route, original.action, original.args},
+        })
+        lu.assertEquals(writes, {{session_id = "s", block_id = "picker", data = "\3"}})
+        write_error = "picker input is unavailable"
+        lu.assertErrorMsgContains(write_error, run_escape, picker, binding.args)
+        lu.assertEquals(#forwarded, 2)
+        _G.rex = saved_rex
+        package.loaded["rex-fastcopy.core"] = saved_core
+    end
 end
 
 os.exit(lu.LuaUnit.run())
