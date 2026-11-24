@@ -38,7 +38,7 @@ local function locate(view, block_id)
             local rect = layer.layout and find_node(layer.layout, block_id)
             if rect then
                 -- Rex view rectangles are already relative to the whole window.
-                return window.window_id, rect, window
+                return window, layer, rect
             end
         end
     end
@@ -83,6 +83,20 @@ local function visit(node, callback)
     end
 end
 
+local function tiled_layout(window, layer, block_id)
+    if layer.kind ~= "tiled" then return end
+    if window.zoomed_block_id == block_id then return {block_id = block_id} end
+    for _, other in ipairs(window.layers) do
+        if other ~= layer and other.state ~= "minimized" then return end
+    end
+    return layer.layout
+end
+
+local close_after_picker = [[
+"$1" --autostart=false wait -s "$2" "$3"
+exec "$1" --autostart=false window close -s "$2" "$4"
+]]
+
 -- Rex macOS 1497: tiled text has a 6 pt top inset absent in floating
 -- layers. Values are device pixels (the tested client uses a 2x display).
 function M.overlay_bounds(dimensions, rect, inset_y)
@@ -101,12 +115,8 @@ function M.open(api, ctx, options)
     assert(ctx.session_id and ctx.block_id, "fastcopy: no terminal pane context")
     local view, err = api.session.view{session_id = ctx.session_id}
     assert(view, err)
-    local window_id, bounds, window = locate(view, ctx.block_id)
+    local window, layer, bounds = locate(view, ctx.block_id)
     local content, dimensions = capture_screen(api, ctx.session_id, ctx.block_id)
-    local padding_columns = 0
-    if dimensions.cell_width_px and dimensions.cell_width_px > 0 then
-        padding_columns = 2 * (options.inset_x_px or 16) / dimensions.cell_width_px
-    end
     local paths = {}
     local function snapshot(text)
         local temp, temp_err = api.exec({"/usr/bin/mktemp", "-t", "rex-fastcopy"})
@@ -119,14 +129,73 @@ function M.open(api, ctx, options)
         assert(wrote and closed, write_err or close_err)
         return path
     end
+    local picker_window
+    local helper = options.directory .. "/target/release/rex-fastcopy"
+    local function picker_args(command)
+        if options.rex_path then
+            command[#command + 1] = "--rex"
+            command[#command + 1] = options.rex_path
+            command[#command + 1] = "--session"
+            command[#command + 1] = ctx.session_id
+        end
+        for _, arg in ipairs(options.args or {}) do command[#command + 1] = arg end
+    end
     local ok, result = pcall(function()
-        local path = snapshot(content)
-        local command = {
-            options.directory .. "/target/release/rex-fastcopy",
-            "--snapshot", path, "--pane", ctx.block_id,
-            "--region", table.concat(bounds, ","),
-        }
+        local command = {helper, "--snapshot", snapshot(content), "--pane", ctx.block_id}
+        local layout = options.rex_path and tiled_layout(window, layer, ctx.block_id)
+        if layout then
+            picker_args(command)
+            local index, target_index = 0, nil
+            local function clone(node)
+                if node.split then
+                    return {split = {
+                        direction = node.split.direction, ratio = node.split.ratio,
+                        before = clone(node.split.before), after = clone(node.split.after),
+                    }}
+                end
+                index = index + 1
+                local argv, size
+                if node.block_id == ctx.block_id then
+                    target_index = index
+                    argv, size = command, dimensions
+                else
+                    local text, neighbor_size = capture_screen(api, ctx.session_id, node.block_id)
+                    argv, size = {helper, "--snapshot", snapshot(text), "--preview"}, neighbor_size
+                end
+                return {block = {
+                    flavor = "com.superlogical.terminal.shell",
+                    options = {shell = "none", command = argv,
+                        size = {columns = size.columns, rows = size.rows},
+                        exit = {on_completion = false},
+                    },
+                }}
+            end
+            -- Tiled panes and floating panes have different chrome in Rex.
+            -- Reuse the native split layout so the same cells get the same insets.
+            local tiled, window_err = api.session.new_window{
+                session_id = ctx.session_id, window_label = "Fastcopy",
+                layout = clone(layout), focus = false,
+            }
+            assert(tiled, window_err)
+            picker_window = tiled.window_id
+            local picker_block = assert(tiled.block_ids[target_index])
+            local watcher, watch_err = api.exec.start({
+                "/bin/sh", "-c", close_after_picker, "rex-fastcopy",
+                options.rex_path, ctx.session_id, picker_block, picker_window,
+            }, {detach = true, stdout = false, stderr = false})
+            assert(watcher, watch_err)
+            local focused, focus_err = api.session.focus_block{
+                session_id = ctx.session_id, block_id = picker_block,
+            }
+            assert(focused, focus_err)
+            return tiled
+        end
+
+        command[#command + 1] = "--region"
+        command[#command + 1] = table.concat(bounds, ",")
+        local padding_columns = 0
         if dimensions.cell_width_px and dimensions.cell_width_px > 0 then
+            padding_columns = 2 * (options.inset_x_px or 16) / dimensions.cell_width_px
             command[#command + 1] = "--padding-columns"
             command[#command + 1] = tostring(padding_columns)
         end
@@ -143,15 +212,9 @@ function M.open(api, ctx, options)
                 end)
             end
         end
-        if options.rex_path then
-            command[#command + 1] = "--rex"
-            command[#command + 1] = options.rex_path
-            command[#command + 1] = "--session"
-            command[#command + 1] = ctx.session_id
-        end
-        for _, arg in ipairs(options.args or {}) do command[#command + 1] = arg end
-        local layer, layer_err = api.session.new_layer{
-            session_id = ctx.session_id, window_id = window_id,
+        picker_args(command)
+        local floating, layer_err = api.session.new_layer{
+            session_id = ctx.session_id, window_id = window.window_id,
             -- The source layout and terminal dimensions are never mutated.
             bounds = M.overlay_bounds(dimensions, bounds, options.inset_y_px), focus = true,
             layout = {block = {
@@ -165,10 +228,13 @@ function M.open(api, ctx, options)
                 },
             }},
         }
-        assert(layer, layer_err)
-        return layer
+        assert(floating, layer_err)
+        return floating
     end)
     if not ok then
+        if picker_window then
+            pcall(api.session.close_window, {session_id = ctx.session_id, window_id = picker_window})
+        end
         for _, path in ipairs(paths) do os.remove(path) end
         error(result)
     end

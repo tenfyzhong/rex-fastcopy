@@ -22,6 +22,9 @@ rex.action{
         -- Rex consumes Escape to exit an active key mode before the terminal
         -- receives it. Clear passthrough mode so one Escape cancels the picker.
         rex.client.queue("client.mode.exit_all")
+        if result.window_id then
+            rex.client.queue("session.select", {session_id = ctx.session_id, window_id = result.window_id})
+        end
         return result
     end,
 }

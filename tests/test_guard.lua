@@ -34,6 +34,15 @@ function TestGuard:testClosedPickerReleasesNavigationWithoutPersistentMode()
     self.layers = {}
     lu.assertFalse(self.guard:active(self.ctx))
 end
+function TestGuard:testTiledPickerGuardsNavigationUntilItsTabCloses()
+    local windows = {{window_id = "source"}, {window_id = "picker"}}
+    self.api.session.view = function() return {windows = windows} end
+    self.guard:begin(self.ctx)
+    self.guard:opened(self.ctx, {window_id = "picker"})
+    lu.assertTrue(self.guard:active(self.ctx))
+    table.remove(windows, 2)
+    lu.assertFalse(self.guard:active(self.ctx))
+end
 function TestGuard:testFailedStartupCanReleaseGuard()
     self.guard:begin(self.ctx)
     self.guard:clear(self.ctx)

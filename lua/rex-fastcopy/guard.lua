@@ -8,7 +8,9 @@ function M.new(api)
         states[key(ctx)] = {session_id = ctx.session_id, starting = true}
     end
     function guard:opened(ctx, result)
-        states[key(ctx)] = {session_id = ctx.session_id, layer_id = result.layer_id}
+        states[key(ctx)] = {
+            session_id = ctx.session_id, layer_id = result.layer_id, window_id = result.window_id,
+        }
     end
     function guard:clear(ctx) states[key(ctx)] = nil end
     function guard:active(ctx)
@@ -17,8 +19,9 @@ function M.new(api)
         if state.starting then return true end
         local view = api.session.view{session_id = state.session_id}
         for _, window in ipairs(view and view.windows or {}) do
+            if state.window_id and window.window_id == state.window_id then return true end
             for _, layer in ipairs(window.layers or {}) do
-                if layer.layer_id == state.layer_id then return true end
+                if state.layer_id and layer.layer_id == state.layer_id then return true end
             end
         end
         -- No persistent client mode: closing/crashing the helper automatically
