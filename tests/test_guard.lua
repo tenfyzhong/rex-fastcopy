@@ -4,9 +4,9 @@ local Guard = require("rex-fastcopy.guard")
 
 TestGuard = {}
 function TestGuard:setUp()
-    self.layers = {{layer_id = "picker"}}
-    self.api = {session = {view = function()
-        return {windows = {{layers = self.layers}}}
+    self.blocks = {{block_id = "picker", placement = "detached"}}
+    self.api = {session = {list_blocks = function()
+        return {blocks = self.blocks}
     end}}
     self.guard = Guard.new(self.api)
     self.ctx = {client_id = "client", session_id = "source-session", block_id = "source"}
@@ -15,32 +15,31 @@ function TestGuard:testBlocksDuringStartupAndWhilePickerExists()
     lu.assertFalse(self.guard:active(self.ctx))
     self.guard:begin(self.ctx)
     lu.assertTrue(self.guard:active(self.ctx))
-    self.guard:opened(self.ctx, {layer_id = "picker"})
+    self.guard:opened(self.ctx, {block_ids = {"picker"}})
     lu.assertTrue(self.guard:active(self.ctx))
     lu.assertFalse(self.guard:active({client_id = "other"}))
 end
 function TestGuard:testGuardFollowsClientEvenIfNativeUIChangesSession()
     self.guard:begin(self.ctx)
-    self.guard:opened(self.ctx, {layer_id = "picker"})
-    self.api.session.view = function(args)
+    self.guard:opened(self.ctx, {block_ids = {"picker"}})
+    self.api.session.list_blocks = function(args)
         lu.assertEquals(args.session_id, "source-session")
-        return {windows = {{layers = self.layers}}}
+        return {blocks = self.blocks}
     end
     lu.assertTrue(self.guard:active({client_id = "client", session_id = "other-session"}))
 end
 function TestGuard:testClosedPickerReleasesNavigationWithoutPersistentMode()
     self.guard:begin(self.ctx)
-    self.guard:opened(self.ctx, {layer_id = "picker"})
-    self.layers = {}
+    self.guard:opened(self.ctx, {block_ids = {"picker"}})
+    self.blocks = {}
     lu.assertFalse(self.guard:active(self.ctx))
 end
-function TestGuard:testTiledPickerGuardsNavigationUntilItsTabCloses()
-    local windows = {{window_id = "source"}, {window_id = "picker"}}
-    self.api.session.view = function() return {windows = windows} end
+function TestGuard:testOtherBlocksDoNotKeepGuardActive()
+    self.blocks[2] = {block_id = "other"}
     self.guard:begin(self.ctx)
-    self.guard:opened(self.ctx, {window_id = "picker"})
+    self.guard:opened(self.ctx, {block_ids = {"picker"}})
     lu.assertTrue(self.guard:active(self.ctx))
-    table.remove(windows, 2)
+    table.remove(self.blocks, 1)
     lu.assertFalse(self.guard:active(self.ctx))
 end
 function TestGuard:testFailedStartupCanReleaseGuard()
@@ -50,8 +49,8 @@ function TestGuard:testFailedStartupCanReleaseGuard()
 end
 function TestGuard:testUnavailableSessionDoesNotPermanentlyLockNavigation()
     self.guard:begin(self.ctx)
-    self.guard:opened(self.ctx, {layer_id = "picker"})
-    self.api.session.view = function() return nil, "session not found" end
+    self.guard:opened(self.ctx, {block_ids = {"picker"}})
+    self.api.session.list_blocks = function() return nil, "session not found" end
     lu.assertFalse(self.guard:active(self.ctx))
 end
 os.exit(lu.LuaUnit.run())

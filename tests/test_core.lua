@@ -11,10 +11,9 @@ end
 
 function TestFastcopy:setUp()
     self.path = os.tmpname()
-    self.background_path = os.tmpname()
     self.created = {}
-    self.temp_created = false
     self.view = { windows = {{ window_id = "w", layers = {{
+        layer_id = "source-layer",
         bounds = {0.1, 0.2, 0.8, 0.6},
         layout = { split = { direction = "horizontal", ratio = 0.5,
             before = { block_id = "left", rect = {0.1, 0.2, 0.4, 0.6} },
@@ -22,24 +21,30 @@ function TestFastcopy:setUp()
         }},
     }}}}}
     self.api = {
-        exec = function(argv)
+        json = {encode = function(args)
+            self.watcher_args = args
+            return "{}"
+        end},
+        exec = setmetatable({start = function(argv, options)
+            self.watcher = argv
+            lu.assertTrue(options.detach)
+            return {}
+        end}, {__call = function(_, argv)
             lu.assertEquals(argv[1], "/usr/bin/mktemp")
-            local path = self.temp_created and self.background_path or self.path
-            self.temp_created = true
-            return { ok = true, stdout = path .. "\n" }
-        end,
+            return { ok = true, stdout = self.path .. "\n" }
+        end}),
         session = {
             view = function() return self.view end,
+            new_block = function(args)
+                self.created = args
+                return {block_id = "picker"}
+            end,
             new_layer = function(args)
                 self.created = args
                 return {layer_id = "overlay", block_ids = {"overlay-block"}}
             end,
         },
         block = { call = function(_, method, args)
-            if args.block_id == "left" then
-                if method == "size" then return {columns = 40, rows = 3} end
-                return {content = "neighbor stays here\n\n\n"}
-            end
             lu.assertEquals(args.block_id, "target")
             if method == "size" then return {columns = 40, rows = 3} end
             if method == "format" then return {content = "history\none\ntwo\nthree"} end
@@ -49,22 +54,19 @@ function TestFastcopy:setUp()
 end
 function TestFastcopy:tearDown()
     os.remove(self.path)
-    os.remove(self.background_path)
 end
 
 function TestFastcopy:testOpensOnlyTargetPaneWithoutLayoutMutation()
     fastcopy.open(self.api, {session_id = "s", block_id = "target"}, {directory = "/extension"})
-    lu.assertEquals(self.created.bounds, {0, 0, 1, 1})
-    lu.assertStrContains(table.concat(self.created.layout.block.options.command, " "),
-        "--region 0.5,0.2,0.4,0.6")
-    lu.assertStrContains(table.concat(self.created.layout.block.options.command, " "),
-        "--background 0.1,0.2,0.4,0.6:" .. self.background_path)
+    lu.assertEquals(self.created.bounds, {0.5, 0.2, 0.4, 0.6})
     lu.assertEquals(self.created.window_id, "w")
     lu.assertTrue(self.created.focus)
     local options = self.created.layout.block.options
     lu.assertEquals(options.shell, "none")
-    lu.assertEquals(options.size, {columns = 100, rows = 5})
-    lu.assertEquals(options.command[1], "/extension/target/release/rex-fastcopy")
+    lu.assertEquals(options.size, {columns = 40, rows = 3})
+    lu.assertTrue(options.exit.on_completion)
+    lu.assertEquals(options.command, {"/extension/target/release/rex-fastcopy",
+        "--snapshot", self.path, "--pane", "target"})
     local file = assert(io.open(self.path))
     lu.assertEquals(file:read("*a"), "one\ntwo\nthree")
     file:close()
@@ -129,63 +131,38 @@ function TestFastcopy:testVtEraseCellsDoesNotMoveCursor()
     file:close()
 end
 
-function TestFastcopy:testOverlayAddsHorizontalPaddingWithoutShrinkingSource()
-    local call = self.api.block.call
-    self.api.block.call = function(creator, method, args)
-        if method == "size" then return {columns = 119, rows = 3, cell_width_px = 16} end
-        return call(creator, method, args)
-    end
-    self.view.windows[1].layers[1].layout.split.after.rect = {0.5, 0, 0.5, 1}
-    fastcopy.open(self.api, {session_id = "s", block_id = "target"}, {directory = "/extension"})
-    lu.assertEquals(self.created.layout.block.options.size.columns, 240)
-    lu.assertEquals(self.created.bounds[3], 1)
-end
-
-function TestFastcopy:testTiledPickerClonesNativeSplitAndKeepsSourceGrid()
+function TestFastcopy:testTiledPickerStartsDetachedWithoutOpeningALayer()
     local layer = self.view.windows[1].layers[1]
     layer.kind = "tiled"
     layer.bounds = {0, 0, 1, 1}
-    local calls = {}
-    self.api.session.new_window = function(args)
-        calls.window = args
-        return {window_id = "picker", block_ids = {"preview-left", "picker-target"}}
-    end
-    self.api.session.focus_block = function(args)
-        calls.focus = args
-        return {}
-    end
-    local exec = self.api.exec
-    self.api.exec = setmetatable({start = function(argv)
-        calls.watcher = argv
-        return {}
-    end}, {__call = function(_, argv)
-        return exec(argv)
-    end})
+    layer.layout.split.before.rect = {0, 0, 0.5, 1}
+    layer.layout.split.after.rect = {0.5, 0, 0.5, 1}
     self.api.session.new_layer = function()
-        error("tiled snapshots must use native tiled geometry")
+        error("Fastcopy must not create a floating layer")
     end
     local result = fastcopy.open(self.api, {session_id = "s", block_id = "target"},
         {directory = "/extension", rex_path = "/bin/rex"})
 
-    lu.assertEquals(result.window_id, "picker")
-    lu.assertFalse(calls.window.focus)
-    local split = calls.window.layout.split
-    lu.assertEquals(split.direction, "horizontal")
-    lu.assertEquals(split.ratio, 0.5)
-    lu.assertEquals(split.before.block.options.size, {columns = 40, rows = 3})
-    lu.assertEquals(split.after.block.options.size, {columns = 40, rows = 3})
-    lu.assertStrContains(table.concat(split.before.block.options.command, " "), "--preview")
-    lu.assertNotStrContains(table.concat(split.after.block.options.command, " "), "--region")
-    lu.assertEquals(calls.focus, {session_id = "s", block_id = "picker-target"})
-    lu.assertEquals({table.unpack(calls.watcher, #calls.watcher - 3)}, {"/bin/rex", "s", "picker-target", "picker"})
+    lu.assertEquals(result.block_ids, {"picker"})
+    lu.assertEquals(self.created.session_id, "s")
+    lu.assertFalse(self.created.options.exit.on_completion)
+    lu.assertStrContains(table.concat(self.created.options.command, " "), "--wait-for-snapshot")
+    lu.assertEquals(self.created.options.size, {columns = 40, rows = 3})
+    lu.assertEquals(self.watcher_args, {
+        core = "/extension/lua/rex-fastcopy/core.lua", session = "s", source = "target", picker = "picker",
+        window = "w", layer = "source-layer", rex_path = "/bin/rex", zoomed = false,
+        snapshot = self.path, ready = self.path .. ".ready",
+    })
 end
 
-function TestFastcopy:testLayerAccountsForNativeTopInset()
-    local rect = fastcopy.overlay_bounds({rows = 58, cell_height_px = 35}, {0.5, 0, 0.5, 1})
-    -- Native tiled panes inset their text by 12 device pixels at 2x scaling.
-    lu.assertAlmostEquals(rect[2] * 2080, 12, 0.25)
-    lu.assertEquals(rect[1], 0)
-    lu.assertAlmostEquals(rect[2] + rect[4], 1, 0.000001)
+function TestFastcopy:testZoomedPickerPreservesSourceGridAndPassesZoomState()
+    local window = self.view.windows[1]
+    window.layers[1].kind = "tiled"
+    window.zoomed_block_id = "target"
+    fastcopy.open(self.api, {session_id = "s", block_id = "target"},
+        {directory = "/extension", rex_path = "/bin/rex"})
+    lu.assertEquals(self.created.options.size, {columns = 40, rows = 3})
+    lu.assertTrue(self.watcher_args.zoomed)
 end
 
 function TestFastcopy:testFailedLayerRemovesSnapshot()
@@ -195,11 +172,55 @@ function TestFastcopy:testFailedLayerRemovesSnapshot()
     lu.assertNil(io.open(self.path))
 end
 
-function TestFastcopy:testPassesFocusReturnTarget()
-    fastcopy.open(self.api, {session_id = "s", block_id = "target"},
-        {directory = "/extension", rex_path = "/bin/rex"})
-    local command = table.concat(self.created.layout.block.options.command, " ")
-    lu.assertStrContains(command, "--rex /bin/rex --session s")
+function TestFastcopy:testFailedWatcherClosesOnlyPickerAndRemovesSnapshot()
+    local closed
+    self.api.exec.start = function() return nil, "failed watcher" end
+    self.api.call = function(method, args)
+        lu.assertEquals(method, "block.close")
+        closed = args
+    end
+    lu.assertErrorMsgContains("failed watcher", fastcopy.open, self.api,
+        {session_id = "s", block_id = "target"}, {directory = "/extension", rex_path = "/bin/rex"})
+    lu.assertEquals(closed, {session_id = "s", block_id = "picker"})
+    lu.assertNil(io.open(self.path))
+end
+
+function TestFastcopy:testRestorationCollapsesTemporarySplitBeforeReturningFocus()
+    local calls = {}
+    local function record(name)
+        calls[#calls + 1] = name
+        return {}
+    end
+    local function view(block)
+        return {active_window_id = "w", windows = {{window_id = "w", focused_block_id = block,
+            layers = {{layer_id = "native", layout = {block_id = block, rect = {0, 0, 1, 1}}}}}}}
+    end
+    local restore_ratio
+    local api = {
+        call = function(method)
+            if method == "session.own_block" then return {blocks = {{owner = "watcher"}}} end
+            return record(method)
+        end,
+        session = {
+            attach = function() return {client_id = "watcher", view = view("source")} end,
+            view = function() return view("picker") end,
+            move_block = function(args)
+                if args.block_id == "source" then restore_ratio = args.ratio end
+                return record("move " .. args.block_id)
+            end,
+            detach_block = function() return record("detach source") end,
+            focus_block = function(args) return record("focus " .. args.block_id) end,
+        },
+        exec = function() return record("wait for picker") end,
+    }
+    assert(io.open(self.path, "w")):close()
+    fastcopy.run_in_pane(api, {session = "s", source = "source", picker = "picker",
+        window = "w", layer = "native", rex_path = "/bin/rex",
+        snapshot = self.path, ready = self.path .. ".ready",
+    })
+    lu.assertEquals(calls, {"move picker", "detach source", "focus picker", "wait for picker",
+        "move source", "block.close", "session.disown_block", "focus source"})
+    lu.assertTrue(restore_ratio >= 0.999)
 end
 
 function TestFastcopy:testPaginatedCaptureKeepsFinalRows()
@@ -236,21 +257,27 @@ end
 function TestFastcopy:testEntryGuardsNavigationAndReleasesAfterClose()
     local saved_rex = _G.rex
     local saved_core = package.loaded["rex-fastcopy.core"]
-    local actions, queued, bound, layers = {}, {}, {}, {{layer_id = "test"}}
+    local actions, queued, bound, writes, blocks = {}, {}, {}, {}, {{block_id = "picker"}}
     local opens, directory = 0, nil
     package.loaded["rex-fastcopy.core"] = {open = function(_, _, options)
         opens = opens + 1
         directory = options.directory
-        return {layer_id = "test"}
+        return {layer_id = "test", block_ids = {"picker"}}
     end}
     _G.rex = {
         action = function(value) actions[value.name] = value end,
         bindings = function() return {
             {key = "ctrl+h", action = "pane.focus", args = {direction = "left"}},
             {key = "ctrl+s", action = "client.mode.enter", args = {name = "prefix"}},
+            {mode = "terminal", key = "esc", action = "pane.send_key", args = {key = "escape"}},
         } end,
         bind = function(key, action, args) bound[key] = {action = action, args = args} end,
-        session = {view = function() return {windows = {{layers = layers}}} end},
+        session = {list_blocks = function() return {blocks = blocks} end},
+        block = {call = function(creator, method, args)
+            lu.assertEquals({creator, method}, {"com.superlogical.terminal", "write"})
+            writes[#writes + 1] = args
+            return {bytes_written = 1}
+        end},
         client = {queue = function(name) queued[#queued + 1] = name end},
     }
     dofile(os.getenv("PWD") .. "/lua/rex-fastcopy/init.lua")
@@ -265,11 +292,25 @@ function TestFastcopy:testEntryGuardsNavigationAndReleasesAfterClose()
         actions[binding.action].run(ctx, binding.args)
     end
     lu.assertEquals(queued, {"client.mode.exit_all"})
+    local escape = bound.escape.action
+    local picker = {session_id = "s", block_id = "picker", client_id = "client"}
+    lu.assertFalse(escape(ctx))
+    lu.assertFalse(escape({session_id = "s", block_id = "picker", client_id = "another"}))
+    lu.assertFalse(escape({session_id = "other", block_id = "picker", client_id = "client"}))
+    lu.assertEquals(writes, {})
+    lu.assertTrue(escape(picker))
+    local passthrough = bound["terminal/esc"]
+    lu.assertEquals(passthrough.args, {action = "pane.send_key", original_args = {key = "escape"}})
+    actions[passthrough.action].run(picker, passthrough.args)
+    local cancel = {session_id = "s", block_id = "picker", data = "\3"}
+    lu.assertEquals(writes, {cancel, cancel})
     actions.fastcopy.run(ctx)
     lu.assertEquals(opens, 1, "must not open another picker while selecting")
-    layers = {}
+    blocks = {}
     actions.fastcopy_guard.run(ctx, bound["ctrl+h"].args)
-    lu.assertEquals(queued, {"client.mode.exit_all", "pane.focus"})
+    lu.assertFalse(escape(ctx))
+    actions[passthrough.action].run(ctx, passthrough.args)
+    lu.assertEquals(queued, {"client.mode.exit_all", "pane.focus", "pane.send_key"})
     _G.rex = saved_rex
     package.loaded["rex-fastcopy.core"] = saved_core
 end
@@ -290,6 +331,60 @@ function TestFastcopy:testRexpackModuleRegistersBindingsWithoutLegacyPaths()
     lu.assertNotNil(actions.fastcopy)
     lu.assertEquals(bindings["prefix/f"], "fastcopy")
     lu.assertEquals(bindings["terminal_prefix/f"], "fastcopy")
+end
+
+function TestFastcopy:testConfiguredEscapeRunsOriginalActionOutsidePicker()
+    local saved_rex = _G.rex
+    local saved_core = package.loaded["rex-fastcopy.core"]
+    for _, original in ipairs({
+        {action = "pane.focus", args = {direction = "left"}, route = "client"},
+        {action = "custom_escape", args = {target = "editor"}, route = "server"},
+    }) do
+        local actions, bindings, forwarded, writes = {}, {}, {}, {}
+        local write_error
+        local function forward(route, action, args)
+            if action ~= "client.mode.exit_all" then
+                forwarded[#forwarded + 1] = {route, action, args}
+            end
+        end
+        package.loaded["rex-fastcopy.core"] = {open = function() return {block_ids = {"picker"}} end}
+        _G.rex = {
+            action = function(action) actions[action.name] = action end,
+            bind = function(key, action, args) bindings[key] = {action = action, args = args} end,
+            bindings = function() return {
+                {key = "escape", action = "pane.send_key", args = {key = "escape"}},
+                {key = "esc", action = original.action, args = original.args},
+            } end,
+            session = {list_blocks = function() return {blocks = {}} end},
+            block = {call = function(_, _, args)
+                if write_error then return nil, write_error end
+                writes[#writes + 1] = args
+                return {bytes_written = 1}
+            end},
+            client = {queue = function(name, args) forward("client", name, args) end},
+            invoke = function(name, args) forward("server", name, args) end,
+        }
+        dofile(os.getenv("PWD") .. "/lua/rex-fastcopy/init.lua")
+        local binding = bindings.escape
+        lu.assertIsString(binding.action)
+        local run_escape = actions[binding.action].run
+        local source = {session_id = "s", block_id = "source", client_id = "client"}
+        local picker = {session_id = "s", block_id = "picker", client_id = "client"}
+        run_escape(source, binding.args)
+        actions.fastcopy.run(source)
+        run_escape(picker, binding.args)
+        run_escape(source, binding.args)
+        lu.assertEquals(forwarded, {
+            {original.route, original.action, original.args},
+            {original.route, original.action, original.args},
+        })
+        lu.assertEquals(writes, {{session_id = "s", block_id = "picker", data = "\3"}})
+        write_error = "picker input is unavailable"
+        lu.assertErrorMsgContains(write_error, run_escape, picker, binding.args)
+        lu.assertEquals(#forwarded, 2)
+        _G.rex = saved_rex
+        package.loaded["rex-fastcopy.core"] = saved_core
+    end
 end
 
 os.exit(lu.LuaUnit.run())
