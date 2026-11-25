@@ -75,81 +75,93 @@ local function capture_screen(api, session_id, block_id)
 end
 
 local run_picker = [[
-return dofile(rex.args.core).run_in_pane(rex, rex.args)
+return dofile(rex.args.core).wait_for_picker(rex, rex.args)
 ]]
 
-function M.run_in_pane(api, args)
+function M.wait_for_picker(api, args)
     local session_id, source, picker = args.session, args.source, args.picker
-    local function move_beside(block, anchor, side, ratio)
-        return api.session.move_block{
-            session_id = session_id, block_id = block, anchor_block_id = anchor,
-            direction = "horizontal", side = side, ratio = ratio,
-        }
-    end
+    local target = {session_id = session_id, block_id = source}
+    local source_block = {session_id = session_id, block_ids = {source}}
+    local swap = {session_id = session_id, block_id = source, other_block_id = picker}
+    local parking = {session_id = session_id, layer_id = args.layer, state = "minimized"}
+    local original_size, claimed, source_parked
     local function focus(block)
-        local target = {session_id = session_id, block_id = block}
         if args.zoomed then
-            target.zoom = true
-            return api.session.zoom_block(target)
+            return api.session.zoom_block{session_id = session_id, block_id = block, zoom = true}
         end
-        return api.session.focus_block(target)
+        return api.session.focus_block{session_id = session_id, block_id = block}
     end
-    local claimed_source, detached_source = false, false
     local ok, err = pcall(function()
-        local attached = assert(api.session.attach{session_id = session_id})
-        local view = attached.view
-        local window, layer = locate(view, source)
-        assert(layer and layer.layer_id == args.layer and window.window_id == args.window
-            and window.focused_block_id == source
-            and view.active_window_id == window.window_id, "fastcopy: source pane changed")
-        -- Keep the original terminal size while the temporary split is collapsed.
-        local claimed = assert(api.call("session.own_block", {
-            session_id = session_id, block_ids = {source}, mode = "take",
-        }))
-        assert(claimed.blocks[1].owner == attached.client_id, "fastcopy: could not preserve the source grid")
-        claimed_source = true
-        assert(move_beside(picker, source, "after", 0.9))
-        assert(api.session.detach_block{session_id = session_id, block_id = source})
-        detached_source = true
-        assert(focus(picker))
+        if args.native then
+            local attached = assert(api.session.attach{session_id = session_id})
+            local window, layer = locate(attached.view, source)
+            local picker_window, picker_layer = locate(attached.view, picker)
+            assert(window and window == picker_window and layer.layer_id == args.source_layer
+                and picker_layer.layer_id == args.layer
+                and attached.view.active_window_id == window.window_id
+                and window.focused_block_id == source
+                and (window.zoomed_block_id == source) == args.zoomed, "fastcopy: source pane changed")
+            original_size = assert(api.block.call(terminal, "size", target))
+            if original_size.owner then
+                -- The app can request a different terminal size while the
+                -- source is in the parking layer. Keep its original grid.
+                local owned = assert(api.call("session.own_block", {
+                    session_id = session_id, block_ids = {source}, mode = "take",
+                }))
+                assert(owned.blocks[1].owner == attached.client_id, "fastcopy: could not preserve the source grid")
+                claimed = true
+            end
+            assert(api.session.swap_blocks(swap))
+            source_parked = true
+            assert(focus(picker))
+            assert(api.session.set_layer_state(parking))
+        end
         assert(os.rename(args.snapshot, args.ready))
         api.exec({args.rex_path, "--autostart=false", "wait", "-s", session_id, picker})
     end)
     os.remove(args.snapshot)
     os.remove(args.ready)
 
-    local restored, restore_focus = pcall(function()
-        local still_focused = false
-        if detached_source then
+    local restored, restore_err = pcall(function()
+        if source_parked then
             local view = assert(api.session.view{session_id = session_id})
-            local window, layer = locate(view, picker)
-            local anchor
-            if layer and layer.layer_id == args.layer and window.window_id == args.window then
-                anchor = picker
-                still_focused = view.active_window_id == window.window_id and window.focused_block_id == picker
-            else
-                -- If Rex closed the picker directly, use a surviving pane in
-                -- the original tab to make the source terminal visible again.
-                for _, candidate in ipairs(view.windows or {}) do
-                    if candidate.window_id == args.window then
-                        anchor = candidate.focused_block_id
-                        break
+            local window, layer = locate(view, source)
+            local picker_window, picker_layer = locate(view, picker)
+            assert(window and window == picker_window and layer.layer_id == args.layer
+                and picker_layer.layer_id == args.source_layer, "fastcopy: picker pane was moved or closed")
+            local restore_focus = view.active_window_id == window.window_id and
+                (window.focused_block_id == picker or window.focused_block_id == source)
+            assert(api.session.swap_blocks(swap))
+            source_parked = false
+            if restore_focus then assert(focus(source)) end
+            if claimed and view.active_window_id == window.window_id and (restore_focus or not args.zoomed) then
+                -- A size requested for the floating grid would take effect
+                -- as soon as ownership returns. Wait for the native size.
+                for _ = 1, 20 do
+                    local size = assert(api.block.call(terminal, "size", target))
+                    local pending_resize = false
+                    for _, request in ipairs(size.desired or {}) do
+                        if request.client_id == original_size.owner then
+                            pending_resize = request.columns ~= original_size.columns
+                                or request.rows ~= original_size.rows
+                            break
+                        end
                     end
+                    if not pending_resize then break end
+                    api.sleep(0.025)
                 end
             end
-            assert(anchor, "fastcopy: no pane available to restore the source terminal")
-            -- Keep the restored pane near its final width while Rex removes
-            -- the temporary split. Focus the source once the split is gone.
-            assert(move_beside(source, anchor, "before", anchor == picker and 0.999 or 0.9))
         end
-        api.call("block.close", {session_id = session_id, block_id = picker})
-        return still_focused
     end)
-    if claimed_source then
-        api.call("session.disown_block", {session_id = session_id, block_ids = {source}})
+    if claimed then api.call("session.disown_block", source_block) end
+    if source_parked then
+        -- A removed picker has no native slot to swap back into. Keep the
+        -- live terminal accessible without closing the parking layer.
+        parking.state = "normal"
+        api.session.set_layer_state(parking)
     end
-    if not restored then error(restore_focus) end
-    if restore_focus then focus(source) end
+    api.call("block.close", {session_id = session_id, block_id = picker})
+    if not restored then error(restore_err) end
     if not ok then error(err) end
 end
 
@@ -159,11 +171,15 @@ function M.open(api, ctx, options)
     assert(view, err)
     local window, layer, bounds = locate(view, ctx.block_id)
     assert(window, "fastcopy: target pane is not placed")
+    local watched = options.rex_path ~= nil
+    local native = watched and layer.kind == "tiled"
     local zoomed = layer.kind == "tiled" and window.zoomed_block_id == ctx.block_id
+    if zoomed then bounds = {0, 0, 1, 1} end
     local content, dimensions = capture_screen(api, ctx.session_id, ctx.block_id)
     local temp, temp_err = api.exec({"/usr/bin/mktemp", "-t", "rex-fastcopy"})
     assert(temp and temp.ok, temp_err or "fastcopy: cannot create snapshot")
     local path = temp.stdout:gsub("[\r\n]+$", "")
+    local ready = watched and path .. ".ready" or path
     local picker
     local ok, result = pcall(function()
         local file = assert(io.open(path, "w"))
@@ -171,11 +187,9 @@ function M.open(api, ctx, options)
         local closed, close_err = file:close()
         assert(wrote and closed, write_err or close_err)
 
-        local native = options.rex_path ~= nil
-        local ready = native and path .. ".ready" or path
         local command = {options.directory .. "/target/release/rex-fastcopy",
             "--snapshot", ready, "--pane", ctx.block_id}
-        if native then
+        if watched then
             command[#command + 1] = "--wait-for-snapshot"
             command[#command + 1] = "--keep-frame-on-exit"
         end
@@ -185,40 +199,43 @@ function M.open(api, ctx, options)
             flavor = "com.superlogical.terminal.shell", label = "Fastcopy",
             options = {shell = "none", command = command,
                 size = {columns = dimensions.columns, rows = dimensions.rows},
-                exit = {on_completion = not native},
+                exit = {on_completion = not watched},
             },
         }
-        if not native then
-            local floating, layer_err = api.session.new_layer{
-                session_id = ctx.session_id, window_id = window.window_id,
-                bounds = bounds, focus = true, layout = {block = block},
-            }
-            assert(floating, layer_err)
-            return floating
+        -- A floating source already uses the same insets as the picker.
+        -- For tiled panes, use this layer only to hold the swapped-out terminal.
+        local floating, layer_err = api.session.new_layer{
+            session_id = ctx.session_id, window_id = window.window_id,
+            bounds = bounds, focus = not native, layout = {block = block},
+        }
+        assert(floating, layer_err)
+        picker = floating.block_ids and floating.block_ids[1]
+        if native then
+            assert(api.session.set_layer_state{session_id = ctx.session_id,
+                layer_id = floating.layer_id, state = "minimized"})
         end
-
-        block.session_id = ctx.session_id
-        local created, create_err = api.session.new_block(block)
-        assert(created, create_err)
-        picker = assert(created.block_id)
-        local watcher_args = assert(api.json.encode{
-            core = options.directory .. "/lua/rex-fastcopy/core.lua",
-            session = ctx.session_id, source = ctx.block_id, picker = picker,
-            window = window.window_id, layer = assert(layer.layer_id),
-            rex_path = options.rex_path, zoomed = zoomed, snapshot = path, ready = ready,
-        })
-        local watcher, watch_err = api.exec.start({
-            options.rex_path, "--autostart=false", "do", "-s", ctx.session_id, "-e", run_picker,
-            "--args", watcher_args,
-        }, {detach = true, stdout = false, stderr = false})
-        assert(watcher, watch_err)
-        return {block_ids = {picker}}
+        if watched then
+            local watcher_args = assert(api.json.encode{
+                core = options.directory .. "/lua/rex-fastcopy/core.lua",
+                session = ctx.session_id, source = ctx.block_id, picker = assert(picker),
+                layer = assert(floating.layer_id), source_layer = layer.layer_id, rex_path = options.rex_path,
+                native = native, zoomed = zoomed,
+                snapshot = path, ready = ready,
+            })
+            local watcher, watch_err = api.exec.start({
+                options.rex_path, "--autostart=false", "do", "-s", ctx.session_id, "-e", run_picker,
+                "--args", watcher_args,
+            }, {detach = true, stdout = false, stderr = false})
+            assert(watcher, watch_err)
+        end
+        return floating
     end)
     if not ok then
         if picker then
             pcall(api.call, "block.close", {session_id = ctx.session_id, block_id = picker})
         end
         os.remove(path)
+        if watched then os.remove(ready) end
         error(result)
     end
     return result
