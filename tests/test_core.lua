@@ -35,13 +35,13 @@ function TestFastcopy:setUp()
         end}),
         session = {
             view = function() return self.view end,
-            new_block = function(args)
-                self.created = args
-                return {block_id = "picker"}
-            end,
             new_layer = function(args)
                 self.created = args
                 return {layer_id = "overlay", block_ids = {"overlay-block"}}
+            end,
+            set_layer_state = function(args)
+                self.layer_state = args
+                return {}
             end,
         },
         block = { call = function(_, method, args)
@@ -54,6 +54,7 @@ function TestFastcopy:setUp()
 end
 function TestFastcopy:tearDown()
     os.remove(self.path)
+    os.remove(self.path .. ".ready")
 end
 
 function TestFastcopy:testOpensOnlyTargetPaneWithoutLayoutMutation()
@@ -131,26 +132,30 @@ function TestFastcopy:testVtEraseCellsDoesNotMoveCursor()
     file:close()
 end
 
-function TestFastcopy:testTiledPickerStartsDetachedWithoutOpeningALayer()
+function TestFastcopy:testTiledPickerPreparesAMinimizedLayerForTheSwap()
     local layer = self.view.windows[1].layers[1]
     layer.kind = "tiled"
     layer.bounds = {0, 0, 1, 1}
     layer.layout.split.before.rect = {0, 0, 0.5, 1}
     layer.layout.split.after.rect = {0.5, 0, 0.5, 1}
-    self.api.session.new_layer = function()
-        error("Fastcopy must not create a floating layer")
-    end
     local result = fastcopy.open(self.api, {session_id = "s", block_id = "target"},
         {directory = "/extension", rex_path = "/bin/rex"})
 
-    lu.assertEquals(result.block_ids, {"picker"})
+    lu.assertEquals(result.block_ids, {"overlay-block"})
     lu.assertEquals(self.created.session_id, "s")
-    lu.assertFalse(self.created.options.exit.on_completion)
-    lu.assertStrContains(table.concat(self.created.options.command, " "), "--wait-for-snapshot")
-    lu.assertEquals(self.created.options.size, {columns = 40, rows = 3})
+    lu.assertEquals(self.created.window_id, "w")
+    lu.assertEquals(self.created.bounds, {0.5, 0, 0.5, 1})
+    lu.assertFalse(self.created.focus)
+    lu.assertEquals(self.layer_state, {session_id = "s", layer_id = "overlay", state = "minimized"})
+    local options = self.created.layout.block.options
+    lu.assertFalse(options.exit.on_completion)
+    lu.assertStrContains(table.concat(options.command, " "), "--keep-frame-on-exit")
+    lu.assertStrContains(table.concat(options.command, " "), "--wait-for-snapshot")
+    lu.assertEquals(options.size, {columns = 40, rows = 3})
     lu.assertEquals(self.watcher_args, {
-        core = "/extension/lua/rex-fastcopy/core.lua", session = "s", source = "target", picker = "picker",
-        window = "w", layer = "source-layer", rex_path = "/bin/rex", zoomed = false,
+        core = "/extension/lua/rex-fastcopy/core.lua", session = "s", source = "target",
+        picker = "overlay-block", layer = "overlay", source_layer = "source-layer", rex_path = "/bin/rex",
+        native = true, zoomed = false,
         snapshot = self.path, ready = self.path .. ".ready",
     })
 end
@@ -161,7 +166,9 @@ function TestFastcopy:testZoomedPickerPreservesSourceGridAndPassesZoomState()
     window.zoomed_block_id = "target"
     fastcopy.open(self.api, {session_id = "s", block_id = "target"},
         {directory = "/extension", rex_path = "/bin/rex"})
-    lu.assertEquals(self.created.options.size, {columns = 40, rows = 3})
+    lu.assertEquals(self.created.bounds, {0, 0, 1, 1})
+    lu.assertFalse(self.created.focus)
+    lu.assertEquals(self.created.layout.block.options.size, {columns = 40, rows = 3})
     lu.assertTrue(self.watcher_args.zoomed)
 end
 
@@ -181,46 +188,88 @@ function TestFastcopy:testFailedWatcherClosesOnlyPickerAndRemovesSnapshot()
     end
     lu.assertErrorMsgContains("failed watcher", fastcopy.open, self.api,
         {session_id = "s", block_id = "target"}, {directory = "/extension", rex_path = "/bin/rex"})
-    lu.assertEquals(closed, {session_id = "s", block_id = "picker"})
+    lu.assertEquals(closed, {session_id = "s", block_id = "overlay-block"})
     lu.assertNil(io.open(self.path))
+    lu.assertNil(io.open(self.path .. ".ready"))
 end
 
-function TestFastcopy:testRestorationCollapsesTemporarySplitBeforeReturningFocus()
-    local calls = {}
-    local function record(name)
-        calls[#calls + 1] = name
-        return {}
-    end
-    local function view(block)
-        return {active_window_id = "w", windows = {{window_id = "w", focused_block_id = block,
-            layers = {{layer_id = "native", layout = {block_id = block, rect = {0, 0, 1, 1}}}}}}}
-    end
-    local restore_ratio
-    local api = {
-        call = function(method)
-            if method == "session.own_block" then return {blocks = {{owner = "watcher"}}} end
-            return record(method)
-        end,
-        session = {
-            attach = function() return {client_id = "watcher", view = view("source")} end,
-            view = function() return view("picker") end,
-            move_block = function(args)
-                if args.block_id == "source" then restore_ratio = args.ratio end
-                return record("move " .. args.block_id)
+function TestFastcopy:testRestorationSwapsBackBeforeRestoringZoomAndReleasingTheGrid()
+    for _, focused in ipairs({"picker", "neighbor"}) do
+        local calls = {}
+        local function record(name)
+            calls[#calls + 1] = name
+        end
+        local function view(block, zoomed, swapped)
+            return {active_window_id = "w", windows = {{
+                window_id = "w", focused_block_id = block, zoomed_block_id = zoomed, layers = {
+                    {layer_id = "native", layout = {block_id = swapped and "picker" or "source",
+                        rect = {0, 0, 1, 1}}},
+                    {layer_id = "overlay", layout = {block_id = swapped and "source" or "picker",
+                        rect = {0, 0, 1, 1}}},
+                },
+            }}}
+        end
+        local narrow_request = true
+        local api = {
+            call = function(method, args)
+                if method == "block.close" then
+                    lu.assertEquals(args, {session_id = "s", block_id = "picker"})
+                else
+                    lu.assertEquals(args.block_ids, {"source"})
+                end
+                record(method)
+                return {blocks = {{owner = "watcher"}}}
             end,
-            detach_block = function() return record("detach source") end,
-            focus_block = function(args) return record("focus " .. args.block_id) end,
-        },
-        exec = function() return record("wait for picker") end,
-    }
-    assert(io.open(self.path, "w")):close()
-    fastcopy.run_in_pane(api, {session = "s", source = "source", picker = "picker",
-        window = "w", layer = "native", rex_path = "/bin/rex",
-        snapshot = self.path, ready = self.path .. ".ready",
-    })
-    lu.assertEquals(calls, {"move picker", "detach source", "focus picker", "wait for picker",
-        "move source", "block.close", "session.disown_block", "focus source"})
-    lu.assertTrue(restore_ratio >= 0.999)
+            block = {call = function(_, method, args)
+                lu.assertEquals(method, "size")
+                lu.assertEquals(args.block_id, "source")
+                return {columns = 80, rows = 24, owner = "app", desired = {
+                    {client_id = "app", columns = narrow_request and 40 or 80, rows = 24},
+                }}
+            end},
+            session = {
+                attach = function()
+                    return {client_id = "watcher", view = view("source", "source")}
+                end,
+                view = function() return view(focused, "picker", true) end,
+                swap_blocks = function(args)
+                    lu.assertEquals(args, {session_id = "s", block_id = "source", other_block_id = "picker"})
+                    record("swap")
+                    return {}
+                end,
+                set_layer_state = function(args)
+                    lu.assertEquals(args, {session_id = "s", layer_id = "overlay", state = "minimized"})
+                    record("minimize")
+                    return {}
+                end,
+                zoom_block = function(args)
+                    lu.assertTrue(args.zoom)
+                    record("zoom " .. args.block_id)
+                    return {}
+                end,
+            },
+            exec = function() record("wait for picker") end,
+            sleep = function()
+                record("wait for full grid")
+                narrow_request = false
+            end,
+        }
+        assert(io.open(self.path, "w")):close()
+        fastcopy.wait_for_picker(api, {session = "s", source = "source", picker = "picker",
+            layer = "overlay", source_layer = "native", rex_path = "/bin/rex", snapshot = self.path,
+            ready = self.path .. ".ready", native = true, zoomed = true,
+        })
+        local expected = {"session.own_block", "swap", "zoom picker", "minimize", "wait for picker", "swap"}
+        if focused == "picker" then
+            expected[#expected + 1] = "zoom source"
+            expected[#expected + 1] = "wait for full grid"
+        end
+        expected[#expected + 1] = "session.disown_block"
+        expected[#expected + 1] = "block.close"
+        lu.assertEquals(calls, expected)
+        lu.assertNil(io.open(self.path))
+        lu.assertNil(io.open(self.path .. ".ready"))
+    end
 end
 
 function TestFastcopy:testPaginatedCaptureKeepsFinalRows()

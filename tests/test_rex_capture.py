@@ -52,14 +52,13 @@ class RexCaptureTests(unittest.TestCase):
 local core = dofile(rex.args.core)
 local captured = {}
 local function capture_snapshot(options)
-    local path = (options.command[3]:gsub("%.ready$", ""))
+    local path = options.command[3]:gsub("%.ready$", "")
     local file = assert(io.open(path))
     captured.text = file:read("*a")
     file:close()
     return path
 end
 local api = {
-    call = rex.call,
     exec = rex.exec,
     json = rex.json,
     block = {call = function(creator, method, args)
@@ -68,13 +67,13 @@ local api = {
     end},
     session = {
         view = rex.session.view,
+        zoom_block = rex.session.zoom_block,
+        set_layer_state = rex.session.set_layer_state,
         new_layer = function(args)
-            os.remove(capture_snapshot(args.layout.block.options))
+            local path = capture_snapshot(args.layout.block.options)
+            if rex.args.overlay then return rex.session.new_layer(args) end
+            os.remove(path)
             return {layer_id = "test"}
-        end,
-        new_block = function(args)
-            capture_snapshot(args.options)
-            return rex.session.new_block(args)
         end,
     },
 }
@@ -111,7 +110,9 @@ return captured
                 self.assertTrue(frame.startswith("a92.0.2.1"), frame)
                 self.assertEqual([w["window_id"] for w in view["windows"]], [source])
                 self.assertEqual(view["active_window_id"], source)
-                self.assertEqual(view["windows"][0]["layers"][0]["layout"]["block_id"], picker)
+                tiled, overlay_layer = view["windows"][0]["layers"]
+                self.assertEqual(tiled["layout"]["block_id"], picker)
+                self.assertEqual(overlay_layer["layout"]["block_id"], block)
                 if zoomed:
                     self.assertEqual(view["windows"][0]["zoomed_block_id"], picker)
                 picker_size = self.rex("block", "call", "-s", session, "-b", picker, "size")
@@ -168,7 +169,7 @@ return captured
                                  "Path(sys.argv[1]).touch(); time.sleep(2)", str(ready)])
             self.check_screen("192.0.2.1", "192.0.2.1", overlay=True, action=action, action_ready=ready)
 
-    def test_four_pane_picker_restores_native_grid_and_shell_eof(self):
+    def test_repeated_picker_preserves_four_pane_layout_and_terminal(self):
         def terminal(text):
             return ("/usr/bin/python3", "-c", "import sys; print("
                     + repr(text) + ", flush=True); sys.stdin.read()")
@@ -183,8 +184,9 @@ return captured
                              "--shell=none", "--json", "--", *terminal("upper-right"))["block_ids"][0]
             bottom_left = self.rex("split", "-s", session, "-b", left, "--split=below",
                                    "--shell=none", "--json", "--", *terminal("lower-left"))["block_ids"][0]
+            target_text = "\n".join(f"history {i:03}" for i in range(120)) + "\n\x1b[2J\x1b[H192.0.2.1"
             target = self.rex("split", "-s", session, "-b", right, "--split=below",
-                              "--shell=none", "--json", "--", *terminal("192.0.2.1"))["block_ids"][0]
+                              "--shell=none", "--json", "--", *terminal(target_text))["block_ids"][0]
 
             def frame(block):
                 return self.rex("block", "call", "-s", session, "-b", block,
@@ -196,11 +198,11 @@ return captured
                 self.assertEqual(view["active_window_id"], source)
                 return view["windows"][0]
 
-            def wait_for(check, on_failure=lambda: None):
+            def wait_for(check):
                 deadline = time.monotonic() + 5
                 while not check():
                     if time.monotonic() >= deadline:
-                        self.fail(f"timed out waiting for Rex: {on_failure()}")
+                        self.fail("timed out waiting for Rex")
                     time.sleep(0.02)
 
             wait_for(lambda: "192.0.2.2" in frame(left) and "192.0.2.1" in frame(target))
@@ -213,37 +215,40 @@ local core = dofile(rex.args.core)
 return core.open(rex, {session_id = rex.args.session, block_id = rex.args.block},
     {directory = rex.args.directory, rex_path = rex.args.rex_path, args = {"--action", "/usr/bin/true"}})
 """
-            picker = self.rex("do", "-s", session, "-e", script, "--args", json.dumps({
+            picker_args = json.dumps({
                 "core": str(ROOT / "lua/rex-fastcopy/core.lua"), "directory": str(ROOT),
                 "rex_path": REX, "session": session, "block": target,
-            }), "--json")
-            selectable, = picker["block_ids"]
-            wait_for(lambda: frame(selectable).startswith("a92.0.2.1"))
-            wait_for(lambda: source_window()["focused_block_id"] == selectable)
-            window = source_window()
-            self.assertEqual(len(window["layers"]), 1, "Fastcopy must not show a floating layer")
-            tiled, = window["layers"]
-            native_pane = tiled["layout"]["split"]["after"]["split"]["after"]
-            self.assertEqual(native_pane, {"block_id": selectable, "rect": target_rect})
-            blocks = self.rex("block", "ls", "-s", session, "--json")["blocks"]
-            self.assertEqual(next(block for block in blocks if block["block_id"] == target)["placement"],
-                             "detached")
-            for block in (target, selectable):
-                size = self.rex("block", "call", "-s", session, "-b", block, "size")
-                for axis in ("columns", "rows"):
-                    self.assertEqual(size[axis], original_size[axis])
+            })
+            original_frame = frame(target)
+            for index, key in enumerate(("a", "escape", "a", "escape")):
+                picker = self.rex("do", "-s", session, "-e", script, "--args", picker_args, "--json")
+                selectable, = picker["block_ids"]
+                wait_for(lambda: frame(selectable).startswith("a92.0.2.1"))
+                wait_for(lambda: source_window()["focused_block_id"] == selectable)
+                tiled, overlay_layer = source_window()["layers"]
+                native_pane = tiled["layout"]["split"]["after"]["split"]["after"]
+                self.assertEqual(native_pane, {"block_id": selectable, "rect": target_rect},
+                                 "Fastcopy must use the source's native terminal grid")
+                native_pane["block_id"] = target
+                self.assertEqual(tiled["layout"], original_layer["layout"])
+                self.assertEqual(overlay_layer["layout"]["block_id"], target)
+                self.assertEqual(overlay_layer["state"], "minimized")
+                self.assertEqual(frame(target), original_frame)
+                for block in (target, selectable):
+                    size = self.rex("block", "call", "-s", session, "-b", block, "size")
+                    self.assertEqual((size["columns"], size["rows"]),
+                                     (original_size["columns"], original_size["rows"]))
+                marker = f"live-{index}"
+                subprocess.run([REX, "send", "-s", session, "-b", left, marker + "\n"],
+                               check=True, capture_output=True)
+                wait_for(lambda: marker in frame(left))
+                self.assertIn("upper-right", frame(right))
+                subprocess.run([REX, "send-key", "-s", session, "-b", selectable, key],
+                               check=True, capture_output=True)
+                wait_for(lambda: source_window()["focused_block_id"] == target
+                         and source_window()["layers"] == [original_layer])
+                self.assertEqual(frame(target), original_frame)
 
-            subprocess.run([REX, "send", "-s", session, "-b", left, "neighbor still running"],
-                           check=True, capture_output=True)
-            wait_for(lambda: "neighbor still running" in frame(left))
-            self.assertIn("upper-right", frame(right))
-            self.assertEqual(source_window()["focused_block_id"], selectable)
-
-            subprocess.run([REX, "send-key", "-s", session, "-b", selectable, "a"],
-                           check=True, capture_output=True)
-            wait_for(lambda: selectable not in [b["block_id"] for b in self.rex(
-                "block", "ls", "-s", session, "--json")["blocks"]],
-                lambda: self.rex("block", "call", "-s", session, "-b", selectable, "process"))
             restored = source_window()
             self.assertEqual(restored["layers"], [original_layer])
             self.assertEqual(restored["focused_block_id"], target)

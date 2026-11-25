@@ -21,8 +21,8 @@ Identical text shares a label and is copied only once. Labels are assigned in te
 
 The selector preserves **original pane coordinates**: right-hand content stays on the right, left-hand content stays on the left, and labels appear only in the target pane.
 Blank rows at the bottom of the screen are preserved. Content that occupies less than a full screen does not move down or pull in historical output.
-Fastcopy displays the snapshot in the focused pane's native terminal grid within its current tab. The original terminal keeps running while temporarily detached from the layout, and the other panes continue showing live output. Selecting a value or cancelling restores the original terminal, its focus, and any active zoom.
-The picker keeps its last frame visible until the original terminal takes over. Snapshots use a uniform color scheme. If the pane becomes narrower during selection, excess columns are clipped so subsequent rows retain their positions.
+In a tiled layout, Fastcopy uses the focused pane's native terminal grid within the current tab. Its rows and columns line up with the original pane. The original terminal stays live in a minimized layer, and neighboring panes continue showing live output. Selecting or cancelling puts the terminal back in the same split with its scroll position, focus, and any active zoom preserved. For an already floating pane, Fastcopy uses a layer with the same bounds.
+The picker keeps its last frame visible through the switch back to the original terminal. Snapshots use a uniform color scheme. Use Up and Down to reach clipped rows after resizing the window. Excess columns are clipped so subsequent rows retain their positions.
 
 ## Files and installation
 
@@ -105,7 +105,7 @@ The GitHub Actions `Tests` workflow runs on pull requests and pushes to `main`, 
 
 The picker has been checked in the Rex app with a left pane and two vertically stacked right panes. The picker opened in the bottom-right pane and Escape restored focus in the same tab.
 
-Optional live Rex tests create and clean up isolated sessions. They cover partially filled and empty screens, pagination, colors, links, and tab spacing. They verify native grid reuse, live neighboring panes, preservation of the source process, and restoration of its pane and zoom. The four-pane test sends Ctrl+D after selection and checks that only the original bottom-right pane closes. A delayed selection action verifies that the picker frame stays visible through the handoff. The test actions leave the clipboard intact.
+Optional live Rex tests create and clean up isolated sessions. They cover partially filled and empty screens, pagination, colors, links, and tab spacing. They verify that the picker occupies the exact native split and that repeated selections and cancellations preserve the split layout, source process, and terminal contents while neighboring panes remain live. They also verify zoom and that Ctrl+D after the picker closes only the original bottom-right pane. A delayed selection action verifies that the picker frame stays visible through the handoff. The test actions leave the clipboard intact.
 
 ```sh
 REX_FASTCOPY_TEST_REX="$HOME/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex" make test-rex
